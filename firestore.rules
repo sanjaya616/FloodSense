@@ -1,0 +1,92 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny all undefined paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validate FloodReport payload structure
+    function isValidReport(data) {
+      return data.keys().hasAll(['id', 'location', 'area', 'lat', 'lng', 'waterLevel', 'roadAccessibility', 'floodType', 'riskLevel', 'verificationStatus'])
+        && data.id is string && data.id.size() <= 64
+        && data.location is string && data.location.size() <= 200
+        && data.area is string && data.area.size() <= 80
+        && data.lat is number
+        && data.lng is number
+        && data.waterLevel in ['Low', 'Moderate', 'High', 'Severe']
+        && data.roadAccessibility in ['Open', 'Partially Blocked', 'Completely Blocked']
+        && data.floodType in ['Street Waterlogging', 'Flash Flood', 'Canal Overflow', 'Drainage Blockage']
+        && data.riskLevel in ['HIGH', 'MEDIUM', 'LOW']
+        && data.verificationStatus in ['VERIFIED', 'UNDER REVIEW', 'REJECTED'];
+    }
+
+    // Users collection: Private user accounts with role mapping
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false; // Disallow list to prevent user directory harvesting
+      allow create, update: if isOwner(userId)
+        && isValidId(userId)
+        && incoming().uid == userId
+        && incoming().role in ['officer', 'citizen'];
+      allow delete: if isOwner(userId);
+    }
+
+    // Reports collection: Public read for civilian safety; authenticated create
+    match /reports/{reportId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && isValidId(reportId)
+        && isValidReport(incoming());
+      allow update: if isSignedIn()
+        && isValidId(reportId)
+        && isValidReport(incoming())
+        && (
+          // Reporter editing description or officers verifying
+          incoming().diff(existing()).affectedKeys().hasOnly(['verificationStatus', 'riskLevel', 'aiConfidence', 'aiClassification', 'description'])
+        );
+      allow delete: if isSignedIn() && existing().createdBy == request.auth.uid;
+    }
+
+    // Hotspots collection: Public read; authenticated sync
+    match /hotspots/{hotspotId} {
+      allow read: if true;
+      allow create, update: if isSignedIn()
+        && isValidId(hotspotId)
+        && incoming().reportCount is number
+        && incoming().riskLevel in ['HIGH', 'MEDIUM', 'LOW'];
+      allow delete: if false; // Hotspot clusters are permanent municipal records
+    }
+
+    // Blockchain Event Registry: Public read for auditability; append-only
+    match /blockchain_records/{recordId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && isValidId(recordId)
+        && incoming().txHash is string;
+      allow update, delete: if false; // Truly immutable audit records
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "FloodSense — Urban Flood Intelligence & Early Warning",
+  "description": "AI-powered urban flood monitoring, real-time hotspot detection, predictive risk modeling, and auditable blockchain event registry for emergency authorities and citizens.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

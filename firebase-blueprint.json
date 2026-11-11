@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with role-based permissions (Officer or Citizen)",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "enum": ["officer", "citizen"] },
+        "department": { "type": "string", "maxLength": 120 },
+        "emergencySector": { "type": "string", "maxLength": 120 },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "FloodReport": {
+      "title": "FloodReport",
+      "description": "Geotagged flood incident report submitted by citizens or sensors",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hotspotId": { "type": "string" },
+        "location": { "type": "string", "maxLength": 200 },
+        "area": { "type": "string", "maxLength": 80 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "timestamp": { "type": "string" },
+        "waterLevel": { "type": "string", "enum": ["Low", "Moderate", "High", "Severe"] },
+        "roadAccessibility": { "type": "string", "enum": ["Open", "Partially Blocked", "Completely Blocked"] },
+        "floodType": { "type": "string", "enum": ["Street Waterlogging", "Flash Flood", "Canal Overflow", "Drainage Blockage"] },
+        "description": { "type": "string", "maxLength": 1000 },
+        "imageUrl": { "type": "string" },
+        "reporterName": { "type": "string", "maxLength": 100 },
+        "reporterPhone": { "type": "string", "maxLength": 30 },
+        "riskLevel": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "verificationStatus": { "type": "string", "enum": ["VERIFIED", "UNDER REVIEW", "REJECTED"] },
+        "aiConfidence": { "type": "number" },
+        "aiClassification": { "type": "string", "maxLength": 150 },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "location", "area", "lat", "lng", "waterLevel", "roadAccessibility", "floodType", "riskLevel", "verificationStatus"]
+    },
+    "FloodHotspot": {
+      "title": "FloodHotspot",
+      "description": "Aggregated spatial flood hotspot cluster",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "location": { "type": "string", "maxLength": 200 },
+        "area": { "type": "string", "maxLength": 80 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "reportCount": { "type": "number" },
+        "firstReportedTime": { "type": "string" },
+        "latestReportedTime": { "type": "string" },
+        "riskLevel": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "riskScore": { "type": "number" },
+        "forecastRainfallMm": { "type": "number" },
+        "verificationStatus": { "type": "string", "enum": ["VERIFIED", "UNDER REVIEW"] },
+        "precaution": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "location", "area", "lat", "lng", "reportCount", "riskLevel", "riskScore"]
+    },
+    "BlockchainRecord": {
+      "title": "BlockchainRecord",
+      "description": "Simulated immutable on-chain flood event anchor",
+      "type": "object",
+      "properties": {
+        "eventId": { "type": "string" },
+        "hotspotId": { "type": "string" },
+        "location": { "type": "string" },
+        "severity": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "timestamp": { "type": "string" },
+        "txHash": { "type": "string" },
+        "blockNumber": { "type": "number" },
+        "network": { "type": "string" },
+        "status": { "type": "string" },
+        "merkleRoot": { "type": "string" },
+        "validatorCount": { "type": "number" }
+      },
+      "required": ["eventId", "hotspotId", "location", "severity", "txHash", "blockNumber", "network", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile with role-based metadata"
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/FloodReport" },
+      "description": "Flood reports submitted by public citizens or verified by emergency personnel"
+    },
+    "/hotspots/{hotspotId}": {
+      "schema": { "$ref": "#/entities/FloodHotspot" },
+      "description": "Algorithmic incident clusters grouped by 500m proximity"
+    },
+    "/blockchain_records/{recordId}": {
+      "schema": { "$ref": "#/entities/BlockchainRecord" },
+      "description": "Immutable disaster event state log"
+    }
+  }
+}
