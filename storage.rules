@@ -1,0 +1,49 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Default-deny all undefined paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isOfficer() {
+      return isSignedIn() && (
+        request.auth.token.role == 'officer' ||
+        request.auth.token.officer == true
+      );
+    }
+
+    function isValidImage() {
+      return request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|jpg|png|webp)');
+    }
+
+    // Report incident photographs
+    // Stored under reports/{userId}/{fileName}
+    match /reports/{userId}/{fileName} {
+      // Images can be read publicly for flood hazard awareness, or by officers and reporter
+      allow read: if true;
+      
+      // Only the authenticated user can upload to their own user directory, 
+      // with size <= 5MB and valid image MIME type. Cannot overwrite files.
+      allow create: if isOwner(userId)
+        && isValidImage();
+
+      // Only the original author or an authorized officer can delete
+      allow delete: if isOwner(userId) || isOfficer();
+
+      // Prevent overwrites/updates to immutable evidence
+      allow update: if false;
+    }
+  }
+}

@@ -21,6 +21,7 @@ import {
   AiVerificationDetails,
   areReportsDuplicate,
   validateCoordinates,
+  generateReportId,
 } from '../utils/floodLogic';
 import {
   INITIAL_REPORTS,
@@ -28,7 +29,7 @@ import {
   INITIAL_BLOCKCHAIN_RECORDS,
   INITIAL_WEATHER_FORECAST,
 } from '../data/demonstrationData';
-import { db, auth, isFirebaseConfigured, googleProvider } from './firebase';
+import { db, auth, isFirebaseConfigured, googleProvider, uploadPhotographToStorage } from './firebase';
 import {
   collection,
   doc,
@@ -37,6 +38,8 @@ import {
   updateDoc,
   query,
   orderBy,
+  onSnapshot,
+  Unsubscribe,
   serverTimestamp,
 } from 'firebase/firestore';
 import { signInWithPopup, signOut as fbSignOut } from 'firebase/auth';
@@ -122,10 +125,10 @@ class FloodService {
           humidityPercent: data.humidityPercent ?? 92,
           windSpeedKmh: data.windSpeedKmh ?? 24,
           windDirection: data.windDirection ?? 'SW',
-          updatedAt: data.updatedAt ?? 'Just now',
-          source: data.source ?? 'Open-Meteo Doppler Feed',
+          updatedAt: data.updatedAt ?? 'Live (Asia/Colombo)',
+          source: data.source ?? 'Open-Meteo Forecast API',
           isLive: !!data.isLive,
-          status: data.status ?? 'Department of Meteorology Advisory: High Runoff Alert',
+          status: data.status ?? 'Normal Conditions Monitoring',
         };
       }
     } catch (err) {
@@ -137,7 +140,7 @@ class FloodService {
     };
   }
 
-  // --- AI Image Verification (Calls /api/ai/verify with Gemini 3.8 Flash) ---
+  // --- AI Image Verification (Calls server-side Gemini 3.8 Flash) ---
   public async verifyImageWithAi(params: {
     imageBase64?: string;
     mimeType?: string;
@@ -170,16 +173,14 @@ class FloodService {
 
   // --- Reports ---
   public async getReports(): Promise<FloodReport[]> {
-    if (this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
-      try {
+    if (this.mode === 'FIREBASE') {
+      if (isFirebaseConfigured() && db) {
         const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'));
         const snapshot = await getDocs(q);
-        if (!snapshot.empty) {
-          return snapshot.docs.map((docSnap) => docSnap.data() as FloodReport);
-        }
-      } catch (err: any) {
-        console.warn('Firebase read error, falling back to cached demonstration records:', err);
+        // Important: If Firestore is empty, return empty cloud dataset. Do NOT replace with demo data.
+        return snapshot.docs.map((docSnap) => docSnap.data() as FloodReport);
       }
+      return [];
     }
     return [...this.inMemoryReports];
   }
@@ -196,32 +197,59 @@ class FloodService {
       | 'aiConfidence'
       | 'aiClassification'
       | 'aiVerificationDetails'
+      | 'isDuplicate'
+      | 'duplicateOfReportId'
     > & {
+      imageFile?: File;
       customImage?: string;
+      imageMimeType?: string;
     }
-  ): Promise<{ report: FloodReport; hotspot: FloodHotspot; blockchainRecord?: BlockchainRecord; isDuplicate?: boolean }> {
+  ): Promise<{
+    report: FloodReport;
+    hotspot: FloodHotspot;
+    blockchainRecord?: BlockchainRecord;
+    isDuplicate?: boolean;
+    duplicateOfId?: string;
+  }> {
     const timestamp = new Date().toISOString();
-    const newId = `REP-${Date.now().toString().slice(-4)}`;
+    // Collision-resistant identifier
+    const newId = generateReportId();
 
     // Validate coordinates
     if (!validateCoordinates(reportInput.lat, reportInput.lng)) {
       throw new Error(`Invalid GPS coordinates: lat=${reportInput.lat}, lng=${reportInput.lng}`);
     }
 
-    // Check for duplicates in recent reports
-    const isDuplicate = this.inMemoryReports.some((existing) =>
-      areReportsDuplicate(existing, {
+    // Check for potential duplicate reports within 25m and 5 minutes
+    const existingReports = this.mode === 'FIREBASE' ? await this.getReports() : this.inMemoryReports;
+    let duplicateOfId: string | undefined;
+    const isDuplicate = existingReports.some((existing) => {
+      const match = areReportsDuplicate(existing, {
         lat: reportInput.lat,
         lng: reportInput.lng,
         timestamp,
-      })
-    );
+      });
+      if (match) duplicateOfId = existing.id;
+      return match;
+    });
 
-    // AI Verification
+    // Image Upload to Firebase Storage if file provided and in Firebase mode
+    let storedImageUrl: string | undefined = reportInput.imageUrl;
+    if (reportInput.imageFile && this.mode === 'FIREBASE') {
+      storedImageUrl = await uploadPhotographToStorage(
+        reportInput.imageFile,
+        reportInput.reporterId || 'citizen_anon'
+      );
+    } else if (reportInput.customImage) {
+      storedImageUrl = reportInput.customImage;
+    }
+
+    // AI Verification: send Base64 representation to server
     let aiResult: AiVerificationDetails;
-    if (reportInput.customImage || reportInput.imageUrl) {
+    if (reportInput.customImage) {
       aiResult = await this.verifyImageWithAi({
-        imageBase64: reportInput.customImage || reportInput.imageUrl,
+        imageBase64: reportInput.customImage,
+        mimeType: reportInput.imageMimeType || 'image/jpeg',
         description: reportInput.description,
         waterLevel: reportInput.waterLevel,
         floodType: reportInput.floodType,
@@ -230,7 +258,7 @@ class FloodService {
       aiResult = simulateAiVerification({
         waterLevel: reportInput.waterLevel,
         floodType: reportInput.floodType,
-        hasImage: false,
+        hasImage: !!storedImageUrl,
         description: reportInput.description,
       });
     }
@@ -242,60 +270,59 @@ class FloodService {
         status: 'Submitted',
         timestamp,
         authorName: reportInput.reporterName || 'Citizen Contributor',
-        note: 'Report submitted via FloodSense mobile/web reporting interface.',
+        note: isDuplicate
+          ? `Report submitted (Identified as near-duplicate of ${duplicateOfId}). Evidence preserved for audit.`
+          : 'Report registered via FloodSense citizen reporting portal.',
       },
     ];
 
-    if (aiResult.status === 'VERIFIED') {
+    if (aiResult.confidence > 0) {
       initialStatusHistory.push({
         status: 'Under Review',
-        timestamp: new Date(Date.now() + 1000).toISOString(),
+        timestamp: new Date(Date.now() + 500).toISOString(),
         authorName: aiResult.method,
-        note: `Automated assessment: ${aiResult.assessment} (${aiResult.confidence}% confidence). Field verification recommended.`,
+        note: `AI Assessment: "${aiResult.aiAssessment}" (${aiResult.confidence}% confidence). Field verification required by emergency officer.`,
       });
     }
 
-    // Hotspot assignment via Haversine clustering
-    let matchedHotspot: FloodHotspot;
-    const existing = this.inMemoryHotspots.find(
-      (h) => h.area.toLowerCase() === reportInput.area.toLowerCase()
+    // Form preliminary report object
+    const createdReport: FloodReport = {
+      ...reportInput,
+      id: newId,
+      timestamp,
+      riskLevel: calculatedRisk,
+      verificationStatus: 'UNDER REVIEW', // AI NEVER auto-verifies; requires human officer confirmation
+      incidentStatus: 'Submitted',
+      statusHistory: initialStatusHistory,
+      aiConfidence: aiResult.confidence,
+      aiClassification: aiResult.aiAssessment,
+      aiVerificationDetails: aiResult,
+      imageUrl: storedImageUrl,
+      isDuplicate,
+      duplicateOfReportId: duplicateOfId,
+    };
+
+    // Calculate updated clusters based on actual coordinates and temporal window
+    const allReportsForClustering = [createdReport, ...existingReports];
+    const rainfallByArea: Record<string, number> = {};
+    this.inMemoryHotspots.forEach((h) => {
+      rainfallByArea[h.area] = h.forecastRainfallMm;
+    });
+
+    const updatedHotspots = clusterReports(
+      allReportsForClustering,
+      this.clusteringConfig,
+      rainfallByArea,
+      this.riskThresholds
     );
 
-    let createdBlockchainRecord: BlockchainRecord | undefined;
-
-    if (existing) {
-      const updatedCount = existing.reportCount + 1;
-      const riskEval = evaluateRiskLevel(updatedCount, existing.forecastRainfallMm, this.riskThresholds);
-
-      matchedHotspot = {
-        ...existing,
-        reportCount: updatedCount,
-        latestReportedTime: timestamp,
-        riskLevel: riskEval.riskLevel,
-        riskScore: riskEval.score,
-        precaution: riskEval.precaution,
-        associatedReportIds: [newId, ...existing.associatedReportIds],
-      };
-
-      this.inMemoryHotspots = this.inMemoryHotspots.map((h) =>
-        h.id === matchedHotspot.id ? matchedHotspot : h
-      );
-
-      if (riskEval.riskLevel === 'HIGH') {
-        createdBlockchainRecord = generateSimulatedBlockchainRecord(
-          matchedHotspot.id,
-          matchedHotspot.location,
-          'HIGH'
-        );
-        this.inMemoryBlockchain = [createdBlockchainRecord, ...this.inMemoryBlockchain];
-      }
-    } else {
-      const newHotspotId = `HS-0${50 + this.inMemoryHotspots.length}`;
+    // Find the hotspot containing the newly created report
+    let matchedHotspot = updatedHotspots.find((h) => h.associatedReportIds.includes(newId));
+    if (!matchedHotspot) {
       const riskEval = evaluateRiskLevel(1, 20.0, this.riskThresholds);
-
       matchedHotspot = {
-        id: newHotspotId,
-        location: `${reportInput.location}, ${reportInput.area}`,
+        id: `HS-0${50 + updatedHotspots.length}`,
+        location: `${reportInput.location}`,
         area: reportInput.area,
         lat: reportInput.lat,
         lng: reportInput.lng,
@@ -305,48 +332,69 @@ class FloodService {
         riskLevel: riskEval.riskLevel,
         riskScore: riskEval.score,
         forecastRainfallMm: 20.0,
-        verificationStatus: aiResult.status === 'REJECTED' ? 'UNDER REVIEW' : aiResult.status,
+        verificationStatus: 'UNDER REVIEW',
         precaution: riskEval.precaution,
         associatedReportIds: [newId],
         clusterRadiusMeters: this.clusteringConfig.spatialRadiusMeters,
-        formationDetails: {
-          timeSpanMinutes: 0,
-          activeWindowHours: this.clusteringConfig.temporalWindowHours,
-          spatialRadiusMeters: this.clusteringConfig.spatialRadiusMeters,
-          centerLat: reportInput.lat,
-          centerLng: reportInput.lng,
-          reasoning: 'Newly established cluster seed from verified citizen geotag.',
-        },
       };
-
-      this.inMemoryHotspots = [matchedHotspot, ...this.inMemoryHotspots];
+      updatedHotspots.unshift(matchedHotspot);
     }
 
-    const createdReport: FloodReport = {
-      ...reportInput,
-      id: newId,
-      hotspotId: matchedHotspot.id,
-      timestamp,
-      riskLevel: calculatedRisk,
-      verificationStatus: aiResult.status,
-      incidentStatus: aiResult.status === 'VERIFIED' ? 'Under Review' : 'Submitted',
-      statusHistory: initialStatusHistory,
-      aiConfidence: aiResult.confidence,
-      aiClassification: aiResult.assessment,
-      aiVerificationDetails: aiResult,
-      imageUrl: reportInput.customImage || reportInput.imageUrl,
-    };
+    createdReport.hotspotId = matchedHotspot.id;
 
+    // Generate blockchain audit record if high risk
+    let createdBlockchainRecord: BlockchainRecord | undefined;
+    if (matchedHotspot.riskLevel === 'HIGH') {
+      createdBlockchainRecord = generateSimulatedBlockchainRecord(
+        matchedHotspot.id,
+        matchedHotspot.location,
+        'HIGH'
+      );
+    }
+
+    // Persist in-memory state
     this.inMemoryReports = [createdReport, ...this.inMemoryReports];
+    this.inMemoryHotspots = updatedHotspots;
+    if (createdBlockchainRecord) {
+      this.inMemoryBlockchain = [createdBlockchainRecord, ...this.inMemoryBlockchain];
+    }
 
-    // If Firebase active, persist to Firestore
+    // If Firebase active, persist to Cloud Firestore (Without large base64 strings!)
     if (this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
       try {
-        await setDoc(doc(db, 'reports', newId), {
+        // Sanitize payload: never write base64 strings to Firestore
+        const firestoreReportPayload = {
           ...createdReport,
           createdAt: serverTimestamp(),
-        });
+        };
+        // Clean out raw local file bytes if present
+        delete (firestoreReportPayload as any).imageFile;
+        delete (firestoreReportPayload as any).customImage;
+
+        await setDoc(doc(db, 'reports', newId), firestoreReportPayload);
+
+        // Also write public sanitized report (Zero PII)
+        const publicReportPayload = {
+          id: createdReport.id,
+          location: createdReport.location,
+          area: createdReport.area,
+          lat: createdReport.lat,
+          lng: createdReport.lng,
+          waterLevel: createdReport.waterLevel,
+          roadAccessibility: createdReport.roadAccessibility,
+          floodType: createdReport.floodType,
+          riskLevel: createdReport.riskLevel,
+          incidentStatus: createdReport.incidentStatus,
+          verificationStatus: createdReport.verificationStatus,
+          timestamp: createdReport.timestamp,
+          imageUrl: createdReport.imageUrl || '',
+          description: createdReport.description,
+          hotspotId: matchedHotspot.id,
+        };
+        await setDoc(doc(db, 'public_reports', newId), publicReportPayload);
+
         await setDoc(doc(db, 'hotspots', matchedHotspot.id), matchedHotspot);
+
         if (createdBlockchainRecord) {
           await setDoc(
             doc(db, 'blockchain_records', createdBlockchainRecord.eventId),
@@ -354,7 +402,8 @@ class FloodService {
           );
         }
       } catch (err: any) {
-        console.error('Firestore write error: ', err);
+        console.error('Firestore write failed:', err);
+        throw new Error(`Cloud database write failed: ${err.message || 'Permission denied'}`);
       }
     }
 
@@ -363,6 +412,7 @@ class FloodService {
       hotspot: matchedHotspot,
       blockchainRecord: createdBlockchainRecord,
       isDuplicate,
+      duplicateOfId,
     };
   }
 
@@ -375,9 +425,9 @@ class FloodService {
   ): Promise<FloodReport | null> {
     const timestamp = new Date().toISOString();
     const existingIndex = this.inMemoryReports.findIndex((r) => r.id === reportId);
-    if (existingIndex === -1) return null;
+    if (existingIndex === -1 && this.mode === 'DEMO') return null;
 
-    const existing = this.inMemoryReports[existingIndex];
+    const existing = existingIndex !== -1 ? this.inMemoryReports[existingIndex] : null;
     const newEntry: StatusHistoryEntry = {
       status: newStatus,
       timestamp,
@@ -387,16 +437,19 @@ class FloodService {
 
     const isNowVerified = newStatus === 'Verified' || newStatus === 'Alert Issued' || newStatus === 'Resolved';
     const updatedReport: FloodReport = {
-      ...existing,
+      ...(existing || ({} as FloodReport)),
+      id: reportId,
       incidentStatus: newStatus,
       verificationStatus: isNowVerified ? 'VERIFIED' : newStatus === 'Rejected' ? 'REJECTED' : 'UNDER REVIEW',
-      statusHistory: [...(existing.statusHistory || []), newEntry],
-      officerNotes: officerNote ? [...(existing.officerNotes || []), officerNote] : existing.officerNotes,
-      verificationTimestamp: isNowVerified ? (existing.verificationTimestamp || timestamp) : existing.verificationTimestamp,
-      verifiedBy: isNowVerified ? (existing.verifiedBy || authorName) : existing.verifiedBy,
+      statusHistory: [...(existing?.statusHistory || []), newEntry],
+      officerNotes: officerNote ? [...(existing?.officerNotes || []), officerNote] : existing?.officerNotes,
+      verificationTimestamp: isNowVerified ? (existing?.verificationTimestamp || timestamp) : existing?.verificationTimestamp,
+      verifiedBy: isNowVerified ? (existing?.verifiedBy || authorName) : existing?.verifiedBy,
     };
 
-    this.inMemoryReports[existingIndex] = updatedReport;
+    if (existingIndex !== -1) {
+      this.inMemoryReports[existingIndex] = updatedReport;
+    }
 
     if (this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
       try {
@@ -404,12 +457,19 @@ class FloodService {
           incidentStatus: updatedReport.incidentStatus,
           verificationStatus: updatedReport.verificationStatus,
           statusHistory: updatedReport.statusHistory,
-          officerNotes: updatedReport.officerNotes,
-          verificationTimestamp: updatedReport.verificationTimestamp,
-          verifiedBy: updatedReport.verifiedBy,
+          officerNotes: updatedReport.officerNotes || [],
+          verificationTimestamp: updatedReport.verificationTimestamp || null,
+          verifiedBy: updatedReport.verifiedBy || null,
+        });
+
+        // Also update public sanitized collection
+        await updateDoc(doc(db, 'public_reports', reportId), {
+          incidentStatus: updatedReport.incidentStatus,
+          verificationStatus: updatedReport.verificationStatus,
         });
       } catch (err: any) {
-        console.error('Firestore update error:', err);
+        console.error('Firestore status update failed:', err);
+        throw new Error(`Failed to update incident in Cloud Firestore: ${err.message}`);
       }
     }
 
@@ -418,48 +478,91 @@ class FloodService {
 
   // --- Hotspots ---
   public async getHotspots(): Promise<FloodHotspot[]> {
-    if (this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
-      try {
+    if (this.mode === 'FIREBASE') {
+      if (isFirebaseConfigured() && db) {
         const snapshot = await getDocs(collection(db, 'hotspots'));
-        if (!snapshot.empty) {
-          return snapshot.docs.map((d) => d.data() as FloodHotspot);
-        }
-      } catch (err: any) {
-        console.warn('Hotspot Firestore read error:', err);
+        return snapshot.docs.map((d) => d.data() as FloodHotspot);
       }
+      return [];
     }
     return [...this.inMemoryHotspots];
   }
 
   // --- Blockchain Records ---
   public async getBlockchainRecords(): Promise<BlockchainRecord[]> {
-    if (this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
-      try {
+    if (this.mode === 'FIREBASE') {
+      if (isFirebaseConfigured() && db) {
         const snapshot = await getDocs(collection(db, 'blockchain_records'));
-        if (!snapshot.empty) {
-          return snapshot.docs.map((d) => d.data() as BlockchainRecord);
-        }
-      } catch (err: any) {
-        console.warn('Blockchain record Firestore read error:', err);
+        return snapshot.docs.map((d) => d.data() as BlockchainRecord);
       }
+      return [];
     }
     return [...this.inMemoryBlockchain];
+  }
+
+  // --- Real-Time Firestore Synchronization ---
+  public subscribeToReports(
+    onUpdate: (reports: FloodReport[]) => void,
+    onError: (error: Error) => void
+  ): Unsubscribe | null {
+    if (this.mode !== 'FIREBASE' || !isFirebaseConfigured() || !db) return null;
+    const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const docs = snapshot.docs.map((d) => d.data() as FloodReport);
+        onUpdate(docs);
+      },
+      (err) => {
+        onError(err);
+      }
+    );
+  }
+
+  public subscribeToHotspots(
+    onUpdate: (hotspots: FloodHotspot[]) => void,
+    onError: (error: Error) => void
+  ): Unsubscribe | null {
+    if (this.mode !== 'FIREBASE' || !isFirebaseConfigured() || !db) return null;
+    return onSnapshot(
+      collection(db, 'hotspots'),
+      (snapshot) => {
+        const docs = snapshot.docs.map((d) => d.data() as FloodHotspot);
+        onUpdate(docs);
+      },
+      (err) => {
+        onError(err);
+      }
+    );
+  }
+
+  // --- Data Reset (Demonstration Mode Only) ---
+  public resetDemonstrationData(options?: { resetSettings?: boolean }): void {
+    this.inMemoryReports = [...INITIAL_REPORTS];
+    this.inMemoryHotspots = [...INITIAL_HOTSPOTS];
+    this.inMemoryBlockchain = [...INITIAL_BLOCKCHAIN_RECORDS];
+
+    localStorage.removeItem('floodsense_reports_v2');
+    localStorage.removeItem('floodsense_hotspots_v2');
+    localStorage.removeItem('floodsense_blockchain_v2');
+
+    if (options?.resetSettings) {
+      this.clusteringConfig = { ...DEFAULT_CLUSTERING_CONFIG };
+      this.riskThresholds = { ...DEFAULT_RISK_THRESHOLDS };
+      localStorage.removeItem('floodsense_clustering_v2');
+      localStorage.removeItem('floodsense_thresholds_v2');
+    }
   }
 
   // --- Auth Integration ---
   public async loginWithGoogle(): Promise<{ uid: string; email: string; displayName: string } | null> {
     if (isFirebaseConfigured() && auth) {
-      try {
-        const result = await signInWithPopup(auth, googleProvider);
-        return {
-          uid: result.user.uid,
-          email: result.user.email || '',
-          displayName: result.user.displayName || 'Emergency Officer',
-        };
-      } catch (err: any) {
-        console.error('Google Sign-in failed:', err);
-        throw err;
-      }
+      const result = await signInWithPopup(auth, googleProvider);
+      return {
+        uid: result.user.uid,
+        email: result.user.email || '',
+        displayName: result.user.displayName || 'Authorized User',
+      };
     }
     return null;
   }

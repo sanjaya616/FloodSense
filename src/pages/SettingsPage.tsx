@@ -8,28 +8,20 @@ import { useFlood } from '../context/FloodContext';
 import {
   User,
   Shield,
-  Bell,
-  Map,
   Sliders,
   RotateCcw,
   CheckCircle2,
   Download,
   Database,
-  Radio,
-  FileCheck,
-  AlertTriangle,
-  Sparkles,
   Cloud,
   Lock,
   RefreshCw,
   LogOut,
   LogIn,
-  Check,
-  XCircle,
-  FileCode,
   Activity,
-  Server,
   Layers,
+  Bell,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface SystemHealthData {
@@ -37,27 +29,33 @@ interface SystemHealthData {
   status: string;
   services: {
     geminiAi: {
-      status: string;
+      status: 'Not Configured' | 'API Key Configured' | 'API Request Successful' | 'API Error' | string;
       configured: boolean;
       mode: string;
       model: string;
+      lastChecked?: string;
     };
     weatherApi: {
-      status: string;
+      status: 'Open-Meteo Live' | 'Demonstration Fallback' | 'Connection Failed' | string;
       provider: string;
       mode: string;
+      lastSuccessfulConnection?: string;
     };
     firebase: {
-      status: string;
-      rulesDeployed: boolean;
+      status: 'Not Configured' | 'Configured' | 'Connected' | 'Connection Failed' | string;
+      mode: string;
+      rulesConfigured: boolean;
     };
     blockchain: {
-      status: string;
-      smartContractPrepared: boolean;
+      status: 'Simulated Mode' | 'Network Connected' | 'Contract Not Configured' | 'Transaction Failed' | string;
+      network: string;
+      chainId: number;
+      isSimulated: boolean;
     };
     mapTileService: {
-      status: string;
+      status: 'Tile Service Loading' | 'Tile Service Available' | 'Tile Service Unavailable' | string;
       provider: string;
+      lastChecked?: string;
     };
   };
 }
@@ -74,7 +72,6 @@ export const SettingsPage: React.FC = () => {
     blockchainRecords,
     dataSourceMode,
     setDataSourceMode,
-    isFirebaseAvailable,
     dbOperationStatus,
     loginWithGoogle,
     logoutGoogle,
@@ -94,11 +91,43 @@ export const SettingsPage: React.FC = () => {
   const [systemHealth, setSystemHealth] = useState<SystemHealthData | null>(null);
   const [isProbingHealth, setIsProbingHealth] = useState(false);
 
-  // Preference toggles
-  const [notifyHighRisk, setNotifyHighRisk] = useState(true);
-  const [notifyWeatherAdvisory, setNotifyWeatherAdvisory] = useState(true);
-  const [notifyBlockchainEvents, setNotifyBlockchainEvents] = useState(false);
-  const [notifySms, setNotifySms] = useState(true);
+  // Local form state for user profile
+  const [profileForm, setProfileForm] = useState({
+    name: userProfile.name,
+    roleName: userProfile.roleName,
+    department: userProfile.department,
+    emergencySector: userProfile.emergencySector,
+    email: userProfile.email,
+    phone: userProfile.phone,
+  });
+
+  // Preference toggles with localStorage persistence
+  const [notifyHighRisk, setNotifyHighRisk] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('floodsense_notify_high_risk');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [notifyWeatherAdvisory, setNotifyWeatherAdvisory] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('floodsense_notify_weather');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [notifySms, setNotifySms] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('floodsense_notify_sms');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
 
   // Fetch actual health from backend /api/health
   const probeSystemHealth = async () => {
@@ -120,14 +149,48 @@ export const SettingsPage: React.FC = () => {
     probeSystemHealth();
   }, []);
 
+  // Update profileForm if userProfile changes externally (e.g. Google Sign-In)
+  useEffect(() => {
+    setProfileForm({
+      name: userProfile.name,
+      roleName: userProfile.roleName,
+      department: userProfile.department,
+      emergencySector: userProfile.emergencySector,
+      email: userProfile.email,
+      phone: userProfile.phone,
+    });
+  }, [userProfile]);
+
   const handleProfileSave = (e: React.FormEvent) => {
     e.preventDefault();
+
+    const updatedProfile = {
+      ...userProfile,
+      name: profileForm.name.trim(),
+      roleName: profileForm.roleName.trim(),
+      department: profileForm.department.trim(),
+      emergencySector: profileForm.emergencySector.trim(),
+      email: profileForm.email.trim(),
+      phone: profileForm.phone.trim(),
+    };
+
+    // Persist to Context state and localStorage
+    setUserProfile(updatedProfile);
+    try {
+      localStorage.setItem('floodsense_profile_v2', JSON.stringify(updatedProfile));
+      localStorage.setItem('floodsense_notify_high_risk', JSON.stringify(notifyHighRisk));
+      localStorage.setItem('floodsense_notify_weather', JSON.stringify(notifyWeatherAdvisory));
+      localStorage.setItem('floodsense_notify_sms', JSON.stringify(notifySms));
+    } catch (err) {
+      console.warn('Failed to persist profile to localStorage:', err);
+    }
+
     setSavedMessage(true);
-    setTimeout(() => setSavedMessage(false), 3000);
+    setTimeout(() => setSavedMessage(false), 3500);
   };
 
   const handleResetData = () => {
-    resetDemonstrationData();
+    resetDemonstrationData({ resetSettings: false });
     setResetConfirm(true);
     setTimeout(() => setResetConfirm(false), 3000);
   };
@@ -159,24 +222,24 @@ export const SettingsPage: React.FC = () => {
   };
 
   const getStatusBadge = (status: string) => {
-    if (status.includes('Connected') || status === 'Live') {
+    if (status === 'API Key Configured' || status === 'Open-Meteo Live' || status === 'Tile Service Available' || status === 'Connected') {
       return (
         <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
-          Connected
+          {status}
         </span>
       );
     }
-    if (status.includes('Demonstration') || status.includes('Simulated')) {
+    if (status === 'Simulated Mode' || status === 'Demonstration Fallback') {
       return (
         <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-cyan-100 text-cyan-800 border border-cyan-200">
-          Demonstration Mode
+          {status}
         </span>
       );
     }
-    if (status.includes('Not Configured')) {
+    if (status === 'Not Configured' || status === 'Configured') {
       return (
         <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
-          Not Configured
+          {status}
         </span>
       );
     }
@@ -202,14 +265,14 @@ export const SettingsPage: React.FC = () => {
       {savedMessage && (
         <div className="p-3.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl text-xs flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-          <span>Settings successfully saved and synchronized.</span>
+          <span>Profile credentials and notification preferences successfully saved.</span>
         </div>
       )}
 
       {resetConfirm && (
         <div className="p-3.5 bg-cyan-50 text-cyan-800 border border-cyan-200 rounded-xl text-xs flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 text-cyan-600" />
-          <span>Demonstration database reset to initial Colombo scenario.</span>
+          <span>Demonstration database reset to initial Colombo baseline. Production cloud records remain untouched.</span>
         </div>
       )}
 
@@ -235,7 +298,7 @@ export const SettingsPage: React.FC = () => {
         </div>
       )}
 
-      {/* COMPACT SYSTEM HEALTH SECTION (Reflects actual checks) */}
+      {/* COMPACT SYSTEM HEALTH SECTION (Genuine checks from backend) */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-xs space-y-4">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div>
@@ -247,7 +310,7 @@ export const SettingsPage: React.FC = () => {
               <span>System Health & Service Integration Probes</span>
             </h3>
             <p className="text-xs text-slate-500">
-              Live operational checks for cloud services, AI models, weather radar, and cryptographic ledgers.
+              Live operational checks for cloud services, AI models, weather APIs, and cryptographic ledgers.
             </p>
           </div>
 
@@ -268,14 +331,14 @@ export const SettingsPage: React.FC = () => {
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="font-bold text-slate-900">Gemini AI Model</span>
-                {getStatusBadge(systemHealth?.services?.geminiAi?.status || 'Connected')}
+                {getStatusBadge(systemHealth?.services?.geminiAi?.status || 'API Key Configured')}
               </div>
               <p className="text-[11px] text-slate-600">
                 Model: <strong className="font-mono">gemini-3.8-flash</strong> (Server-Side Multimodal Verification)
               </p>
             </div>
             <span className="text-[10px] text-slate-400 mt-2 font-mono">
-              Status: {systemHealth?.services?.geminiAi?.configured ? 'API Key Active' : 'Demonstration Fallback'}
+              Mode: {systemHealth?.services?.geminiAi?.mode || 'Live Multimodal AI'}
             </span>
           </div>
 
@@ -284,14 +347,14 @@ export const SettingsPage: React.FC = () => {
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="font-bold text-slate-900">Weather API</span>
-                {getStatusBadge(systemHealth?.services?.weatherApi?.status || 'Connected')}
+                {getStatusBadge(systemHealth?.services?.weatherApi?.status || 'Open-Meteo Live')}
               </div>
               <p className="text-[11px] text-slate-600">
-                Open-Meteo & Department of Meteorology Doppler Telemetry (Colombo)
+                Provider: <strong>Open-Meteo Forecast API</strong> (Asia/Colombo)
               </p>
             </div>
-            <span className="text-[10px] text-emerald-600 font-medium mt-2">
-              ● Live Precipitation Stream
+            <span className="text-[10px] text-slate-400 mt-2 font-mono">
+              Last probe: {systemHealth?.timestamp ? new Date(systemHealth.timestamp).toLocaleTimeString() : 'Live'}
             </span>
           </div>
 
@@ -303,11 +366,11 @@ export const SettingsPage: React.FC = () => {
                 {getStatusBadge(dataSourceMode === 'FIREBASE' ? 'Connected' : 'Demonstration Mode')}
               </div>
               <p className="text-[11px] text-slate-600">
-                Database Schema: `reports`, `hotspots`, `blockchain_records`
+                Status: {dataSourceMode === 'FIREBASE' ? 'Active Cloud Sync' : 'Offline-Safe Demonstration'}
               </p>
             </div>
             <span className="text-[10px] text-slate-400 mt-2 font-mono">
-              Rules: `firestore.rules` deployed
+              Rules: `firestore.rules` & `storage.rules` configured
             </span>
           </div>
 
@@ -316,14 +379,14 @@ export const SettingsPage: React.FC = () => {
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="font-bold text-slate-900">Blockchain Network</span>
-                {getStatusBadge('Demonstration Mode')}
+                {getStatusBadge('Simulated Mode')}
               </div>
               <p className="text-[11px] text-slate-600">
-                Ethereum Sepolia Testnet (Chain ID: 11155111)
+                Network: Ethereum Sepolia Testnet (Simulated Demonstrations)
               </p>
             </div>
             <span className="text-[10px] text-slate-400 mt-2 font-mono">
-              Smart Contract: Deployed Ready
+              Status: Demonstration Mode
             </span>
           </div>
 
@@ -332,10 +395,10 @@ export const SettingsPage: React.FC = () => {
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="font-bold text-slate-900">GIS Tile Service</span>
-                {getStatusBadge('Connected')}
+                {getStatusBadge(systemHealth?.services?.mapTileService?.status || 'Tile Service Available')}
               </div>
               <p className="text-[11px] text-slate-600">
-                OpenStreetMap Standard Carto Tiles
+                OpenStreetMap Carto Vector Tiles
               </p>
             </div>
             <span className="text-[10px] text-emerald-600 font-medium mt-2">
@@ -375,7 +438,7 @@ export const SettingsPage: React.FC = () => {
               <span>Firebase Cloud Firestore & Authentication Service Layer</span>
             </h3>
             <p className="text-xs text-slate-500">
-              Switch seamlessly between local demonstration records and live cloud persistence.
+              Switch between local demonstration records and Google Cloud Firestore.
             </p>
           </div>
 
@@ -416,8 +479,7 @@ export const SettingsPage: React.FC = () => {
               />
             </div>
             <p className="text-xs text-slate-500 leading-relaxed">
-              Standalone offline-safe scenario with Colombo demonstration incidents, synthetic AI
-              confidence metrics, and local storage retention.
+              Standalone scenario with Colombo demonstration incidents, synthetic AI confidence metrics, and local storage retention.
             </p>
           </div>
 
@@ -443,8 +505,7 @@ export const SettingsPage: React.FC = () => {
               />
             </div>
             <p className="text-xs text-slate-500 leading-relaxed">
-              Connect to Google Cloud Firestore with real-time listeners, document sync, and Firebase
-              Google Authentication.
+              Connect to Google Cloud Firestore with real-time onSnapshot listeners, cloud document synchronization, and Firebase Storage.
             </p>
           </div>
         </div>
@@ -489,7 +550,7 @@ export const SettingsPage: React.FC = () => {
 
           <div className="flex items-center gap-2 text-[11px] text-slate-500 font-mono">
             <Lock className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Rules: `firestore.rules` deployed</span>
+            <span>Rules: `firestore.rules` & `storage.rules` configured</span>
           </div>
         </div>
       </div>
@@ -512,6 +573,14 @@ export const SettingsPage: React.FC = () => {
           <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-md bg-slate-100 text-slate-800">
             Current: {role === 'officer' ? 'Emergency Officer' : 'Citizen Reporter'}
           </span>
+        </div>
+
+        <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 flex items-start gap-2">
+          <Shield className="w-4 h-4 text-cyan-600 shrink-0 mt-0.5" />
+          <p>
+            <strong>Security Notice:</strong> The Demonstration Role Switcher controls frontend UI presentation for demonstration walkthroughs.
+            In Firebase Cloud mode, administrative officer rights are governed strictly by trusted server-side custom token claims (`request.auth.token.role == 'officer'`) and cannot be granted by the client.
+          </p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
@@ -563,7 +632,7 @@ export const SettingsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* CLUSTERING & RISK THRESHOLD HEURISTICS (Configurable in Settings) */}
+      {/* CLUSTERING & RISK THRESHOLD HEURISTICS */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-xs space-y-4">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div>
@@ -711,8 +780,8 @@ export const SettingsPage: React.FC = () => {
             <label className="block font-bold text-slate-700 mb-1">Full Name</label>
             <input
               type="text"
-              value={userProfile.name}
-              onChange={(e) => setUserProfile({ ...userProfile, name: e.target.value })}
+              value={profileForm.name}
+              onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white"
             />
           </div>
@@ -721,8 +790,8 @@ export const SettingsPage: React.FC = () => {
             <label className="block font-bold text-slate-700 mb-1">Official Role Title</label>
             <input
               type="text"
-              value={userProfile.roleName}
-              onChange={(e) => setUserProfile({ ...userProfile, roleName: e.target.value })}
+              value={profileForm.roleName}
+              onChange={(e) => setProfileForm({ ...profileForm, roleName: e.target.value })}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white"
             />
           </div>
@@ -731,8 +800,8 @@ export const SettingsPage: React.FC = () => {
             <label className="block font-bold text-slate-700 mb-1">Command Agency</label>
             <input
               type="text"
-              value={userProfile.department}
-              onChange={(e) => setUserProfile({ ...userProfile, department: e.target.value })}
+              value={profileForm.department}
+              onChange={(e) => setProfileForm({ ...profileForm, department: e.target.value })}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white"
             />
           </div>
@@ -741,8 +810,8 @@ export const SettingsPage: React.FC = () => {
             <label className="block font-bold text-slate-700 mb-1">Emergency Operations Sector</label>
             <input
               type="text"
-              value={userProfile.emergencySector}
-              onChange={(e) => setUserProfile({ ...userProfile, emergencySector: e.target.value })}
+              value={profileForm.emergencySector}
+              onChange={(e) => setProfileForm({ ...profileForm, emergencySector: e.target.value })}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white"
             />
           </div>
@@ -751,8 +820,8 @@ export const SettingsPage: React.FC = () => {
             <label className="block font-bold text-slate-700 mb-1">Gov Contact Email</label>
             <input
               type="email"
-              value={userProfile.email}
-              onChange={(e) => setUserProfile({ ...userProfile, email: e.target.value })}
+              value={profileForm.email}
+              onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white font-mono"
             />
           </div>
@@ -761,10 +830,50 @@ export const SettingsPage: React.FC = () => {
             <label className="block font-bold text-slate-700 mb-1">Operations Hot Line</label>
             <input
               type="tel"
-              value={userProfile.phone}
-              onChange={(e) => setUserProfile({ ...userProfile, phone: e.target.value })}
+              value={profileForm.phone}
+              onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white font-mono"
             />
+          </div>
+        </div>
+
+        {/* Notification Preferences */}
+        <div className="pt-3 border-t border-slate-100">
+          <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5 mb-2">
+            <Bell className="w-3.5 h-3.5 text-cyan-600" />
+            <span>Notification & Alert Broadcast Preferences</span>
+          </span>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <label className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={notifyHighRisk}
+                onChange={(e) => setNotifyHighRisk(e.target.checked)}
+                className="text-cyan-600 rounded"
+              />
+              <span className="text-slate-700">High Risk Alerts</span>
+            </label>
+
+            <label className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={notifyWeatherAdvisory}
+                onChange={(e) => setNotifyWeatherAdvisory(e.target.checked)}
+                className="text-cyan-600 rounded"
+              />
+              <span className="text-slate-700">Weather Advisories</span>
+            </label>
+
+            <label className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={notifySms}
+                onChange={(e) => setNotifySms(e.target.checked)}
+                className="text-cyan-600 rounded"
+              />
+              <span className="text-slate-700">Simulated SMS Dispatches</span>
+            </label>
           </div>
         </div>
 
@@ -773,7 +882,7 @@ export const SettingsPage: React.FC = () => {
             type="submit"
             className="px-5 py-2 bg-slate-900 text-white font-bold text-xs rounded-lg hover:bg-slate-800 transition-colors shadow-xs"
           >
-            Update Profile Credentials
+            Update & Persist Profile Credentials
           </button>
         </div>
       </form>

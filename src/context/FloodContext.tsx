@@ -26,8 +26,10 @@ import {
   INITIAL_BLOCKCHAIN_RECORDS,
   INITIAL_WEATHER_FORECAST,
 } from '../data/demonstrationData';
+import { FLOOD_IMAGES } from '../assets/images';
 import { floodService, DataSourceMode, WeatherData } from '../services/floodService';
-import { isFirebaseConfigured, testFirestoreConnection } from '../services/firebase';
+import { isFirebaseConfigured, testFirestoreConnection, auth } from '../services/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 
 export interface UserProfile {
   name: string;
@@ -97,16 +99,26 @@ export interface FloodContextType {
       | 'aiConfidence'
       | 'aiClassification'
       | 'aiVerificationDetails'
+      | 'isDuplicate'
+      | 'duplicateOfReportId'
     > & {
+      imageFile?: File;
       customImage?: string;
+      imageMimeType?: string;
     }
-  ) => Promise<{ report: FloodReport; hotspot: FloodHotspot; blockchainRecord?: BlockchainRecord; isDuplicate?: boolean }>;
+  ) => Promise<{
+    report: FloodReport;
+    hotspot: FloodHotspot;
+    blockchainRecord?: BlockchainRecord;
+    isDuplicate?: boolean;
+    duplicateOfId?: string;
+  }>;
   updateIncidentStatus: (
     reportId: string,
     newStatus: IncidentStatus,
     officerNote?: string
   ) => Promise<FloodReport | null>;
-  resetDemonstrationData: () => void;
+  resetDemonstrationData: (options?: { resetSettings?: boolean }) => void;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   // Configurable rules
@@ -133,6 +145,7 @@ const STORAGE_KEY_REPORTS = 'floodsense_reports_v2';
 const STORAGE_KEY_HOTSPOTS = 'floodsense_hotspots_v2';
 const STORAGE_KEY_BLOCKCHAIN = 'floodsense_blockchain_v2';
 const STORAGE_KEY_ROLE = 'floodsense_role_v2';
+const STORAGE_KEY_PROFILE = 'floodsense_profile_v2';
 const STORAGE_KEY_CLUSTERING = 'floodsense_clustering_v2';
 const STORAGE_KEY_THRESHOLDS = 'floodsense_thresholds_v2';
 
@@ -194,14 +207,20 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return 'officer';
   });
 
-  const [userProfile, setUserProfile] = useState<UserProfile>({
-    name: 'Kasun Pereira',
-    roleName: 'Emergency Management Officer',
-    department: 'Disaster Management Centre (DMC) - Western Province',
-    email: 'k.pereira@dmc.gov.lk',
-    phone: '+94 11 213 6136',
-    avatarUrl: '/src/assets/images/officer_avatar_1794422511550.jpg',
-    emergencySector: 'Sector 04 — Colombo Municipal Basin',
+  const [userProfile, setUserProfile] = useState<UserProfile>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_PROFILE);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      name: 'Kasun Pereira',
+      roleName: 'Emergency Management Officer',
+      department: 'Disaster Management Centre (DMC) - Western Province',
+      email: 'k.pereira@dmc.gov.lk',
+      phone: '+94 11 213 6136',
+      avatarUrl: FLOOD_IMAGES.officerAvatar,
+      emergencySector: 'Sector 04 — Colombo Municipal Basin',
+    };
   });
 
   const [weather, setWeather] = useState<WeatherData>({
@@ -250,7 +269,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     {
       id: 'N-4',
       title: 'Simulated SMS Field Dispatch: Kolonnawa Crew',
-      description: 'SMS notification sent to DMC pumping brigade #2 for sluice gate inspection.',
+      description: 'Simulated SMS sent to DMC pumping brigade #2 for sluice gate inspection.',
       location: 'Kolonnawa Low-Lying Canal Basin',
       time: '45 mins ago',
       unread: false,
@@ -260,16 +279,101 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     },
     {
       id: 'N-5',
-      title: 'Open-Meteo Rainfall Spike (34.5 mm/hr)',
-      description: 'Colombo Doppler radar confirms intense convective cell over Western Basin.',
+      title: 'Open-Meteo Rainfall Telemetry (Colombo Basin)',
+      description: 'Forecast model indicates convective rainfall activity across Western Basin.',
       location: 'Colombo Metro',
       time: '1 hour ago',
       unread: false,
       type: 'WEATHER_WARNING',
-      severity: 'HIGH',
+      severity: 'MEDIUM',
       deliveryChannel: 'push',
     },
   ]);
+
+  // Monitor Firebase Authentication state
+  useEffect(() => {
+    if (auth) {
+      const unsubscribe = onAuthStateChanged(auth, (user) => {
+        if (user) {
+          setUserProfile((prev) => ({
+            ...prev,
+            name: user.displayName || prev.name,
+            email: user.email || prev.email,
+            avatarUrl: user.photoURL || prev.avatarUrl,
+            isFirebaseUser: true,
+          }));
+        } else {
+          setUserProfile((prev) => ({
+            ...prev,
+            isFirebaseUser: false,
+          }));
+        }
+      });
+      return () => unsubscribe();
+    }
+  }, []);
+
+  // Synchronize with Firebase Firestore when in FIREBASE mode
+  useEffect(() => {
+    if (dataSourceMode === 'FIREBASE') {
+      setDbOperationStatus({ loading: true, error: null, success: null });
+
+      // Fetch initial cloud records
+      Promise.all([
+        floodService.getReports(),
+        floodService.getHotspots(),
+        floodService.getBlockchainRecords(),
+      ])
+        .then(([cloudReports, cloudHotspots, cloudBlockchain]) => {
+          // If empty, display empty cloud dataset (do not overwrite with demo records)
+          setReports(cloudReports);
+          setHotspots(cloudHotspots);
+          setBlockchainRecords(cloudBlockchain);
+          setDbOperationStatus({
+            loading: false,
+            error: null,
+            success: `Connected to Cloud Firestore. Loaded ${cloudReports.length} cloud reports.`,
+          });
+        })
+        .catch((err) => {
+          setDbOperationStatus({
+            loading: false,
+            error: `Failed to load Cloud Firestore data: ${err.message}`,
+            success: null,
+          });
+        });
+
+      // Subscribe to real-time changes
+      const unsubReports = floodService.subscribeToReports(
+        (updatedReports) => setReports(updatedReports),
+        (err) => console.warn('Real-time reports listener error:', err.message)
+      );
+
+      const unsubHotspots = floodService.subscribeToHotspots(
+        (updatedHotspots) => setHotspots(updatedHotspots),
+        (err) => console.warn('Real-time hotspots listener error:', err.message)
+      );
+
+      return () => {
+        if (unsubReports) unsubReports();
+        if (unsubHotspots) unsubHotspots();
+      };
+    } else {
+      // In DEMO mode, load cached demonstration records
+      try {
+        const savedReports = localStorage.getItem(STORAGE_KEY_REPORTS);
+        setReports(savedReports ? JSON.parse(savedReports) : INITIAL_REPORTS);
+        const savedHotspots = localStorage.getItem(STORAGE_KEY_HOTSPOTS);
+        setHotspots(savedHotspots ? JSON.parse(savedHotspots) : INITIAL_HOTSPOTS);
+        const savedBlockchain = localStorage.getItem(STORAGE_KEY_BLOCKCHAIN);
+        setBlockchainRecords(savedBlockchain ? JSON.parse(savedBlockchain) : INITIAL_BLOCKCHAIN_RECORDS);
+      } catch {
+        setReports(INITIAL_REPORTS);
+        setHotspots(INITIAL_HOTSPOTS);
+        setBlockchainRecords(INITIAL_BLOCKCHAIN_RECORDS);
+      }
+    }
+  }, [dataSourceMode]);
 
   // Load live weather on mount & poll every 60s
   const refreshWeather = useCallback(async () => {
@@ -283,24 +387,36 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return () => clearInterval(interval);
   }, [refreshWeather]);
 
-  // Sync state to localStorage
+  // Persist demo state to localStorage when in DEMO mode
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_REPORTS, JSON.stringify(reports));
-    } catch {}
-  }, [reports]);
+    if (dataSourceMode === 'DEMO') {
+      try {
+        localStorage.setItem(STORAGE_KEY_REPORTS, JSON.stringify(reports));
+      } catch {}
+    }
+  }, [reports, dataSourceMode]);
+
+  useEffect(() => {
+    if (dataSourceMode === 'DEMO') {
+      try {
+        localStorage.setItem(STORAGE_KEY_HOTSPOTS, JSON.stringify(hotspots));
+      } catch {}
+    }
+  }, [hotspots, dataSourceMode]);
+
+  useEffect(() => {
+    if (dataSourceMode === 'DEMO') {
+      try {
+        localStorage.setItem(STORAGE_KEY_BLOCKCHAIN, JSON.stringify(blockchainRecords));
+      } catch {}
+    }
+  }, [blockchainRecords, dataSourceMode]);
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY_HOTSPOTS, JSON.stringify(hotspots));
+      localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(userProfile));
     } catch {}
-  }, [hotspots]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_BLOCKCHAIN, JSON.stringify(blockchainRecords));
-    } catch {}
-  }, [blockchainRecords]);
+  }, [userProfile]);
 
   useEffect(() => {
     try {
@@ -366,7 +482,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } else {
         setDbOperationStatus({
           loading: false,
-          error: 'Could not establish connection to Firestore server. Ensure rules and credentials are deployed.',
+          error: 'Could not establish connection to Firestore server. Verify project configuration and rules.',
           success: null,
         });
       }
@@ -450,45 +566,72 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       | 'aiConfidence'
       | 'aiClassification'
       | 'aiVerificationDetails'
+      | 'isDuplicate'
+      | 'duplicateOfReportId'
     > & {
+      imageFile?: File;
       customImage?: string;
+      imageMimeType?: string;
     }
   ) => {
-    const result = await floodService.submitReport(newReportData);
+    setDbOperationStatus({ loading: true, error: null, success: null });
 
-    setReports((prev) => [result.report, ...prev]);
+    try {
+      const result = await floodService.submitReport(newReportData);
 
-    // Update hotspots in state
-    setHotspots((prev) => {
-      const existing = prev.find((h) => h.id === result.hotspot.id);
-      if (existing) {
-        return prev.map((h) => (h.id === result.hotspot.id ? result.hotspot : h));
+      setReports((prev) => [result.report, ...prev]);
+
+      // Update hotspots in state
+      setHotspots((prev) => {
+        const existing = prev.find((h) => h.id === result.hotspot.id);
+        if (existing) {
+          return prev.map((h) => (h.id === result.hotspot.id ? result.hotspot : h));
+        }
+        return [result.hotspot, ...prev];
+      });
+
+      if (result.blockchainRecord) {
+        setBlockchainRecords((prev) => [result.blockchainRecord!, ...prev]);
+        addNotification({
+          title: `Smart Contract Anchor #EVT-${result.blockchainRecord.eventId}`,
+          description: `High-risk incident sealed into simulated Sepolia testnet at block ${result.blockchainRecord.blockNumber}.`,
+          location: result.hotspot.location,
+          type: 'BLOCKCHAIN',
+          severity: 'HIGH',
+          deliveryChannel: 'in-app',
+        });
       }
-      return [result.hotspot, ...prev];
-    });
 
-    if (result.blockchainRecord) {
-      setBlockchainRecords((prev) => [result.blockchainRecord!, ...prev]);
       addNotification({
-        title: `Smart Contract Anchor #EVT-${result.blockchainRecord.eventId}`,
-        description: `High-risk incident sealed into simulated Sepolia testnet at block ${result.blockchainRecord.blockNumber}.`,
-        location: result.hotspot.location,
-        type: 'BLOCKCHAIN',
-        severity: 'HIGH',
+        title: result.isDuplicate
+          ? `Duplicate Report Recorded: ${result.report.id} (${result.report.area})`
+          : `New Report: ${result.report.id} (${result.report.area})`,
+        description: result.isDuplicate
+          ? `Report flagged as duplicate of ${result.duplicateOfId}. Evidence preserved for officer review.`
+          : `${result.report.waterLevel} flood reported at ${result.report.location}. Method: ${result.report.aiVerificationDetails?.method || 'AI Early Verification'}.`,
+        location: result.report.location,
+        type: 'NEW_REPORT',
+        severity: result.report.riskLevel,
         deliveryChannel: 'in-app',
       });
+
+      setDbOperationStatus({
+        loading: false,
+        error: null,
+        success: dataSourceMode === 'FIREBASE'
+          ? `Report ${result.report.id} synchronized to Cloud Firestore.`
+          : `Report ${result.report.id} registered in demonstration dataset.`,
+      });
+
+      return result;
+    } catch (err: any) {
+      setDbOperationStatus({
+        loading: false,
+        error: err?.message || 'Failed to submit report.',
+        success: null,
+      });
+      throw err;
     }
-
-    addNotification({
-      title: `New Report: ${result.report.id} (${result.report.area})`,
-      description: `${result.report.waterLevel} flood reported at ${result.report.location}. Method: ${result.report.aiVerificationDetails?.method || 'AI Heuristic'}.`,
-      location: result.report.location,
-      type: 'NEW_REPORT',
-      severity: result.report.riskLevel,
-      deliveryChannel: 'in-app',
-    });
-
-    return result;
   };
 
   const updateIncidentStatus = async (
@@ -496,36 +639,47 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     newStatus: IncidentStatus,
     officerNote?: string
   ): Promise<FloodReport | null> => {
-    const updated = await floodService.updateIncidentStatus(
-      reportId,
-      newStatus,
-      userProfile.name,
-      officerNote
-    );
+    try {
+      const updated = await floodService.updateIncidentStatus(
+        reportId,
+        newStatus,
+        userProfile.name,
+        officerNote
+      );
 
-    if (updated) {
-      setReports((prev) => prev.map((r) => (r.id === reportId ? updated : r)));
+      if (updated) {
+        setReports((prev) => prev.map((r) => (r.id === reportId ? updated : r)));
 
-      addNotification({
-        title: `Incident ${reportId} Updated to "${newStatus}"`,
-        description: officerNote ? `Officer note: ${officerNote}` : `Status modified by ${userProfile.name}.`,
-        location: updated.location,
-        type: newStatus === 'Resolved' ? 'INCIDENT_RESOLVED' : 'OFFICER_UPDATE',
-        severity: newStatus === 'Alert Issued' ? 'HIGH' : 'MEDIUM',
-        deliveryChannel: 'in-app',
+        addNotification({
+          title: `Incident ${reportId} Updated to "${newStatus}"`,
+          description: officerNote ? `Officer note: ${officerNote}` : `Status modified by ${userProfile.name}.`,
+          location: updated.location,
+          type: newStatus === 'Resolved' ? 'INCIDENT_RESOLVED' : 'OFFICER_UPDATE',
+          severity: newStatus === 'Alert Issued' ? 'HIGH' : 'MEDIUM',
+          deliveryChannel: 'in-app',
+        });
+      }
+
+      return updated;
+    } catch (err: any) {
+      setDbOperationStatus({
+        loading: false,
+        error: err?.message || 'Failed to update status in cloud database.',
+        success: null,
       });
+      throw err;
     }
-
-    return updated;
   };
 
-  const resetDemonstrationData = () => {
-    localStorage.removeItem(STORAGE_KEY_REPORTS);
-    localStorage.removeItem(STORAGE_KEY_HOTSPOTS);
-    localStorage.removeItem(STORAGE_KEY_BLOCKCHAIN);
+  const resetDemonstrationData = (options?: { resetSettings?: boolean }) => {
+    floodService.resetDemonstrationData(options);
     setReports(INITIAL_REPORTS);
     setHotspots(INITIAL_HOTSPOTS);
     setBlockchainRecords(INITIAL_BLOCKCHAIN_RECORDS);
+    if (options?.resetSettings) {
+      setClusteringConfig(DEFAULT_CLUSTERING_CONFIG);
+      setRiskThresholds(DEFAULT_RISK_THRESHOLDS);
+    }
   };
 
   return (

@@ -19,10 +19,11 @@ export interface StatusHistoryEntry {
 }
 
 export interface AiVerificationDetails {
-  method: 'Gemini 3.8 Flash (Multimodal)' | 'Demonstration Heuristic (Simulated)';
-  status: 'VERIFIED' | 'UNDER REVIEW' | 'REJECTED';
+  method: string;
+  modelName?: string;
+  aiAssessment?: 'Possible Flooding Detected' | 'No Clear Flooding Detected' | 'Uncertain' | 'Simulation Result' | string;
+  officialStatus?: 'Under Review' | string;
   confidence: number;
-  assessment: string;
   explanation: string;
   uncertainty?: string;
   waterLevelEstimated?: string;
@@ -30,6 +31,8 @@ export interface AiVerificationDetails {
   humanVerificationRequired: boolean;
   timestamp: string;
   disclaimer: string;
+  assessment?: string;
+  status?: string;
 }
 
 export interface FloodReport {
@@ -47,6 +50,7 @@ export interface FloodReport {
   imageUrl?: string;
   reporterName?: string;
   reporterPhone?: string;
+  reporterEmail?: string;
   reporterId?: string;
   riskLevel: 'HIGH' | 'MEDIUM' | 'LOW';
   verificationStatus: 'VERIFIED' | 'UNDER REVIEW' | 'REJECTED';
@@ -58,6 +62,9 @@ export interface FloodReport {
   aiConfidence?: number;
   aiClassification?: string;
   aiVerificationDetails?: AiVerificationDetails;
+  isDuplicate?: boolean;
+  duplicateOfReportId?: string;
+  duplicateCount?: number;
 }
 
 export interface FloodHotspot {
@@ -66,7 +73,8 @@ export interface FloodHotspot {
   area: string;
   lat: number;
   lng: number;
-  reportCount: number;
+  reportCount: number; // Unique non-duplicate reports
+  duplicateReportCount?: number;
   firstReportedTime: string;
   latestReportedTime: string;
   riskLevel: 'HIGH' | 'MEDIUM' | 'LOW';
@@ -130,6 +138,16 @@ export const DEFAULT_CLUSTERING_CONFIG: ClusteringConfig = {
 };
 
 /**
+ * Generates a collision-resistant report ID using crypto.randomUUID when available
+ */
+export function generateReportId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `REP-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  }
+  return `REP-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+}
+
+/**
  * Validates GPS latitude and longitude values
  */
 export function validateCoordinates(lat: number, lng: number): boolean {
@@ -168,7 +186,7 @@ export function calculateHaversineDistance(
 }
 
 /**
- * Determines water level risk weighting
+ * Determines water level risk weighting from citizen observation
  */
 export function getWaterLevelSeverity(waterLevel: FloodReport['waterLevel']): 'HIGH' | 'MEDIUM' | 'LOW' {
   switch (waterLevel) {
@@ -223,8 +241,8 @@ export function evaluateRiskLevel(
     return {
       riskLevel: 'HIGH',
       score,
-      reasoning: `Triggered HIGH risk threshold: ${count} citizen reports (threshold >= ${config.highReportCount}) AND ${rain.toFixed(1)} mm forecast rainfall (threshold > ${config.highRainfallMm} mm).`,
-      precaution: 'Deploy immediate emergency sucker trucks, divert vehicular traffic from low-lying arterial corridors, and broadcast civilian safety advisories.',
+      reasoning: `Deterministic Rule (HIGH Risk): ${count} unique citizen reports (threshold >= ${config.highReportCount}) AND ${rain.toFixed(1)} mm 3h forecast rainfall (threshold > ${config.highRainfallMm} mm). Note: Heuristic indicator, not hydraulic flood prediction.`,
+      precaution: 'Deploy immediate municipal drainage suckers, divert transit from low-lying arterial underpasses, and alert regional operations center.',
       breakdown: {
         reportCount: count,
         rainfallMm: rain,
@@ -239,13 +257,13 @@ export function evaluateRiskLevel(
     const score = Math.min(74, Math.round(45 + (count >= config.mediumReportCount ? 15 : 0) + (rain > config.mediumRainfallMm ? rain * 0.8 : 0)));
     const reasonParts = [];
     if (count >= config.mediumReportCount) reasonParts.push(`${count} reports (threshold >= ${config.mediumReportCount})`);
-    if (rain > config.mediumRainfallMm) reasonParts.push(`${rain.toFixed(1)} mm forecast rainfall (threshold > ${config.mediumRainfallMm} mm)`);
+    if (rain > config.mediumRainfallMm) reasonParts.push(`${rain.toFixed(1)} mm 3h forecast rainfall (threshold > ${config.mediumRainfallMm} mm)`);
 
     return {
       riskLevel: 'MEDIUM',
       score,
-      reasoning: `Triggered MEDIUM risk threshold: ${reasonParts.join(' OR ')}.`,
-      precaution: 'Issue yellow alert for vulnerable intersections, inspect municipal catch basins, and monitor stormwater accumulation velocity.',
+      reasoning: `Deterministic Rule (MEDIUM Risk): ${reasonParts.join(' OR ')}.`,
+      precaution: 'Issue municipal watch alert for vulnerable catch basins, inspect sluice gates, and monitor runoff accumulation velocity.',
       breakdown: {
         reportCount: count,
         rainfallMm: rain,
@@ -260,7 +278,7 @@ export function evaluateRiskLevel(
   return {
     riskLevel: 'LOW',
     score,
-    reasoning: `Parameters remain within manageable baseline: ${count} reports and ${rain.toFixed(1)} mm forecast rainfall.`,
+    reasoning: `Parameters remain within baseline monitoring: ${count} report(s) and ${rain.toFixed(1)} mm 3h rainfall.`,
     precaution: 'Routine surveillance active. Maintain standard runoff monitoring protocols across Colombo municipal sectors.',
     breakdown: {
       reportCount: count,
@@ -290,6 +308,7 @@ export function areReportsDuplicate(
 
 /**
  * Clusters reports into hotspots based on spatial radius (<= 500m) and temporal window (<= 2 hours)
+ * Purely geographic and temporal: never clusters solely based on matching area name strings!
  */
 export function clusterReports(
   reports: FloodReport[],
@@ -326,7 +345,7 @@ export function clusterReports(
       // Check temporal window
       if (timeDiff > windowMs) continue;
 
-      // Check spatial radius to cluster seed
+      // Check spatial radius to cluster seed via Haversine distance
       const distance = calculateHaversineDistance(report.lat, report.lng, candidate.lat, candidate.lng);
       if (distance <= config.spatialRadiusMeters) {
         cluster.push(candidate);
@@ -348,21 +367,27 @@ export function clusterReports(
     const maxTime = new Date(Math.max(...timestamps)).toISOString();
     const timeSpanMinutes = Math.round((Math.max(...timestamps) - Math.min(...timestamps)) / (60 * 1000));
 
-    const area = seed.area || 'Colombo Central';
+    const area = seed.area || 'Colombo Basin';
     const forecastRainfallMm = rainfallByArea?.[area] ?? (seed.riskLevel === 'HIGH' ? 35.0 : seed.riskLevel === 'MEDIUM' ? 18.0 : 8.0);
 
-    const riskEval = evaluateRiskLevel(cluster.length, forecastRainfallMm, riskThresholds);
+    // Distinguish unique reports from duplicates in count
+    const uniqueReports = cluster.filter((r) => !r.isDuplicate);
+    const duplicateCount = cluster.filter((r) => r.isDuplicate).length;
+    const uniqueCount = uniqueReports.length > 0 ? uniqueReports.length : 1;
 
-    const hasVerified = cluster.some((r) => r.verificationStatus === 'VERIFIED');
+    const riskEval = evaluateRiskLevel(uniqueCount, forecastRainfallMm, riskThresholds);
+
+    const hasVerified = cluster.some((r) => r.verificationStatus === 'VERIFIED' || r.incidentStatus === 'Verified' || r.incidentStatus === 'Alert Issued');
     const hotspotId = seed.hotspotId || `HS-0${40 + idx}`;
 
     return {
       id: hotspotId,
-      location: cluster.length > 1 ? `${seed.location} Cluster (${cluster.length} reports)` : seed.location,
+      location: cluster.length > 1 ? `${seed.location} Cluster (${uniqueCount} unique)` : seed.location,
       area,
       lat: Number(avgLat.toFixed(5)),
       lng: Number(avgLng.toFixed(5)),
-      reportCount: cluster.length,
+      reportCount: uniqueCount,
+      duplicateReportCount: duplicateCount,
       firstReportedTime: minTime,
       latestReportedTime: maxTime,
       riskLevel: riskEval.riskLevel,
@@ -378,7 +403,7 @@ export function clusterReports(
         spatialRadiusMeters: config.spatialRadiusMeters,
         centerLat: Number(avgLat.toFixed(5)),
         centerLng: Number(avgLng.toFixed(5)),
-        reasoning: `${cluster.length} report(s) clustered within ${config.spatialRadiusMeters}m radius over a ${timeSpanMinutes}m duration (window: ${config.temporalWindowHours}h).`,
+        reasoning: `${uniqueCount} unique report(s) (and ${duplicateCount} duplicate records) grouped within ${config.spatialRadiusMeters}m radius over ${timeSpanMinutes}m duration (window: ${config.temporalWindowHours}h).`,
       },
     };
   });
@@ -386,6 +411,7 @@ export function clusterReports(
 
 /**
  * AI Verification simulation for citizen uploaded flood reports (Demonstration Mode)
+ * Strictly marks AI assessment as 'Simulation Result' and leaves incident status as 'Under Review'
  */
 export function simulateAiVerification(params: {
   waterLevel: string;
@@ -393,39 +419,40 @@ export function simulateAiVerification(params: {
   hasImage: boolean;
   description: string;
 }): AiVerificationDetails {
-  const { hasImage, waterLevel, floodType, description } = params;
+  const { hasImage, waterLevel, floodType } = params;
   const timestamp = new Date().toISOString();
-  const disclaimer = 'Image classification is an assistive early warning signal and not a substitute for official municipal field inspection.';
+  const disclaimer = 'AI assessment is an assistive early warning signal only. Official verification requires authorized emergency officer confirmation.';
 
   if (!hasImage) {
     return {
-      method: 'Demonstration Heuristic (Simulated)',
-      status: 'UNDER REVIEW',
-      confidence: 68.4,
-      assessment: 'Geotagged Text Signal (No Photographic Evidence)',
-      explanation: 'Simulated Computer Vision: No image payload provided. Report flagged for human field verification and cross-triangulation with nearby sensors.',
-      uncertainty: 'Moderate uncertainty: text-only report lacks optical depth and reflection proof.',
+      method: 'Demonstration Heuristic (No Image)',
+      modelName: 'None (Simulation)',
+      aiAssessment: 'Uncertain',
+      officialStatus: 'Under Review',
+      confidence: 0,
+      explanation: 'No photograph provided with report. Report queued for field inspection.',
+      uncertainty: 'High uncertainty: text-only submission.',
       waterLevelEstimated: waterLevel,
-      roadAccessibilityEstimated: 'Unknown (Awaiting photographic verification)',
+      roadAccessibilityEstimated: 'Uncertain',
       humanVerificationRequired: true,
       timestamp,
       disclaimer,
     };
   }
 
-  const baseConfidence = 91.5;
   const isSevere = waterLevel === 'Severe' || waterLevel === 'High';
-  const confidence = Number((baseConfidence + (isSevere ? 4.2 : 1.8)).toFixed(1));
+  const confidence = isSevere ? 88.5 : 78.0;
 
   return {
-    method: 'Demonstration Heuristic (Simulated)',
-    status: confidence >= 85 ? 'VERIFIED' : 'UNDER REVIEW',
+    method: 'Demonstration Heuristic (Simulation)',
+    modelName: 'None (Academic Simulation)',
+    aiAssessment: 'Simulation Result',
+    officialStatus: 'Under Review',
     confidence,
-    assessment: `Simulated CV: Surface Waterlogging (${floodType})`,
-    explanation: `Simulated Optical Model (Academic Prototype): Texture analysis indicates surface reflectivity and road inundation consistent with ${waterLevel.toLowerCase()} water pooling.`,
+    explanation: `Simulated texture analysis (Academic Prototype): Road surface optical reflectivity consistent with ${waterLevel.toLowerCase()} water accumulation.`,
     uncertainty: 'Estimated synthetic margin of error: ±4.5%. Ground truth requires emergency team confirmation.',
     waterLevelEstimated: waterLevel,
-    roadAccessibilityEstimated: waterLevel === 'Severe' ? 'Completely Blocked' : 'Partially Blocked',
+    roadAccessibilityEstimated: isSevere ? 'Completely Blocked' : 'Partially Blocked',
     humanVerificationRequired: true,
     timestamp,
     disclaimer,

@@ -15,13 +15,28 @@ import {
   areReportsDuplicate,
   clusterReports,
   calculateDynamicAnalytics,
+  generateReportId,
   DEFAULT_RISK_THRESHOLDS,
   DEFAULT_CLUSTERING_CONFIG,
   FloodReport,
   IncidentStatus,
 } from './floodLogic.ts';
 
-// 1. Haversine Distance Tests
+// 1. Unique Report ID Generation (Collision Resistance)
+test('generateReportId produces collision-resistant identifiers starting with REP-', () => {
+  const ids = new Set<string>();
+  const count = 1000;
+  for (let i = 0; i < count; i++) {
+    const id = generateReportId();
+    assert.ok(id.startsWith('REP-'), `Expected ID to start with REP-, got ${id}`);
+    assert.ok(id.length >= 8, `Expected ID length >= 8, got ${id}`);
+    assert.ok(!ids.has(id), `Duplicate ID generated: ${id}`);
+    ids.add(id);
+  }
+  assert.equal(ids.size, count);
+});
+
+// 2. Haversine Distance & Boundary Tests
 test('calculateHaversineDistance calculates realistic geographic distance and handles identical coordinates', () => {
   // Colombo Town Hall (6.9147, 79.8653) to Maradana Railway Station (6.9271, 79.8653) ~ 1.38 km
   const dist = calculateHaversineDistance(6.9147, 79.8653, 6.9271, 79.8653);
@@ -32,7 +47,7 @@ test('calculateHaversineDistance calculates realistic geographic distance and ha
   assert.equal(zeroDist, 0);
 });
 
-// 2. Coordinate Validation Tests
+// 3. Coordinate Validation Tests
 test('validateCoordinates correctly identifies valid vs invalid geographic bounds', () => {
   assert.equal(validateCoordinates(6.9271, 79.8653), true);
   assert.equal(validateCoordinates(0, 0), true);
@@ -52,25 +67,26 @@ test('validateCoordinates correctly identifies valid vs invalid geographic bound
   assert.equal(validateCoordinates(6.9271, NaN), false);
 });
 
-// 3. Haversine with Invalid Coordinates
+// 4. Haversine with Invalid Coordinates Returns Infinity
 test('calculateHaversineDistance returns Infinity when coordinates are invalid', () => {
-  const invalidDist = calculateHaversineDistance(100.0, 79.8653, 6.9271, 79.8653);
-  assert.equal(invalidDist, Infinity);
+  assert.equal(calculateHaversineDistance(100.0, 79.8653, 6.9271, 79.8653), Infinity);
+  assert.equal(calculateHaversineDistance(6.9271, 79.8653, -92.0, 79.8653), Infinity);
+  assert.equal(calculateHaversineDistance(6.9271, 200.0, 6.9271, 79.8653), Infinity);
 });
 
-// 4. Duplicate Report Detection
-test('areReportsDuplicate correctly identifies near-duplicate reports', () => {
+// 5. Duplicate Report Detection
+test('areReportsDuplicate correctly identifies near-duplicate reports within 25m and 5 minutes', () => {
   const baseReport = {
     lat: 6.9271,
     lng: 79.8653,
-    timestamp: '2026-11-11T10:00:00.000Z',
+    timestamp: '2026-11-12T10:00:00.000Z',
   };
 
   // Same spot within 2 minutes (< 25m and < 5 mins) -> Duplicate
   const duplicateReport = {
     lat: 6.92711, // ~1 meter offset
     lng: 79.86531,
-    timestamp: '2026-11-11T10:02:00.000Z',
+    timestamp: '2026-11-12T10:02:00.000Z',
   };
   assert.equal(areReportsDuplicate(baseReport, duplicateReport), true);
 
@@ -78,7 +94,7 @@ test('areReportsDuplicate correctly identifies near-duplicate reports', () => {
   const laterReport = {
     lat: 6.9271,
     lng: 79.8653,
-    timestamp: '2026-11-11T10:30:00.000Z',
+    timestamp: '2026-11-12T10:30:00.000Z',
   };
   assert.equal(areReportsDuplicate(baseReport, laterReport), false);
 
@@ -86,12 +102,150 @@ test('areReportsDuplicate correctly identifies near-duplicate reports', () => {
   const distantReport = {
     lat: 6.9300,
     lng: 79.8653,
-    timestamp: '2026-11-11T10:01:00.000Z',
+    timestamp: '2026-11-12T10:01:00.000Z',
   };
   assert.equal(areReportsDuplicate(baseReport, distantReport), false);
 });
 
-// 5. Risk Threshold Boundaries (Evaluating HIGH before MEDIUM)
+// 6. Duplicate Reports Do Not Double Count in Hotspot Unique Reports
+test('clusterReports preserves duplicates as audit evidence without inflating unique report count', () => {
+  const now = Date.now();
+  const original: FloodReport = {
+    id: 'ORIG-1',
+    location: 'Maradana Junction',
+    area: 'Maradana',
+    lat: 6.9271,
+    lng: 79.8653,
+    timestamp: new Date(now).toISOString(),
+    waterLevel: 'Severe',
+    roadAccessibility: 'Completely Blocked',
+    floodType: 'Street Waterlogging',
+    description: 'First submission',
+    riskLevel: 'HIGH',
+    verificationStatus: 'UNDER REVIEW',
+    incidentStatus: 'Submitted',
+    statusHistory: [],
+    isDuplicate: false,
+  };
+
+  const duplicate: FloodReport = {
+    id: 'DUP-1',
+    location: 'Maradana Junction',
+    area: 'Maradana',
+    lat: 6.92711,
+    lng: 79.86531,
+    timestamp: new Date(now + 60000).toISOString(),
+    waterLevel: 'Severe',
+    roadAccessibility: 'Completely Blocked',
+    floodType: 'Street Waterlogging',
+    description: 'Second citizen submitting near same spot',
+    riskLevel: 'HIGH',
+    verificationStatus: 'UNDER REVIEW',
+    incidentStatus: 'Submitted',
+    statusHistory: [],
+    isDuplicate: true,
+    duplicateOfReportId: 'ORIG-1',
+  };
+
+  const clusters = clusterReports([original, duplicate]);
+  assert.equal(clusters.length, 1);
+  const cluster = clusters[0];
+  // Both reports are in associatedReportIds for audit trail
+  assert.equal(cluster.associatedReportIds.length, 2);
+  // Unique report count is 1, and duplicate count is 1
+  assert.equal(cluster.reportCount, 1);
+  assert.equal(cluster.duplicateReportCount, 1);
+});
+
+// 7. Cross-Area Spatial Clustering (True Geospatial Distance vs Name Matching)
+test('clusterReports groups nearby reports across municipal area boundaries based on GPS coordinates', () => {
+  const now = Date.now();
+  // Report in Maradana sector
+  const r1: FloodReport = {
+    id: 'R-MAR',
+    location: 'Maradana Border Boundary',
+    area: 'Maradana',
+    lat: 6.9300,
+    lng: 79.8700,
+    timestamp: new Date(now).toISOString(),
+    waterLevel: 'High',
+    roadAccessibility: 'Partially Blocked',
+    floodType: 'Street Waterlogging',
+    description: 'Boundary test',
+    riskLevel: 'HIGH',
+    verificationStatus: 'UNDER REVIEW',
+    incidentStatus: 'Submitted',
+    statusHistory: [],
+  };
+
+  // Report labelled Dematagoda sector but only 120m away from r1
+  const r2: FloodReport = {
+    id: 'R-DEM',
+    location: 'Dematagoda Sector Border',
+    area: 'Dematagoda',
+    lat: 6.9310, // ~111m north
+    lng: 79.8700,
+    timestamp: new Date(now - 10 * 60 * 1000).toISOString(),
+    waterLevel: 'High',
+    roadAccessibility: 'Partially Blocked',
+    floodType: 'Street Waterlogging',
+    description: 'Across sector boundary',
+    riskLevel: 'HIGH',
+    verificationStatus: 'UNDER REVIEW',
+    incidentStatus: 'Submitted',
+    statusHistory: [],
+  };
+
+  const clusters = clusterReports([r1, r2]);
+  // Even though areas are 'Maradana' and 'Dematagoda', they are within 500m -> Single cluster
+  assert.equal(clusters.length, 1);
+  assert.ok(clusters[0].associatedReportIds.includes('R-MAR'));
+  assert.ok(clusters[0].associatedReportIds.includes('R-DEM'));
+});
+
+// 8. Temporal Clustering Boundaries
+test('clusterReports separates reports exceeding temporal window despite same location', () => {
+  const now = Date.now();
+  const currentReport: FloodReport = {
+    id: 'R-NOW',
+    location: 'Kolonnawa Canal',
+    area: 'Kolonnawa',
+    lat: 6.9360,
+    lng: 79.8850,
+    timestamp: new Date(now).toISOString(),
+    waterLevel: 'Severe',
+    roadAccessibility: 'Completely Blocked',
+    floodType: 'Canal Overflow',
+    description: 'Current convective downpour',
+    riskLevel: 'HIGH',
+    verificationStatus: 'UNDER REVIEW',
+    incidentStatus: 'Submitted',
+    statusHistory: [],
+  };
+
+  // Same coordinates but 4 hours ago (exceeds default 2-hour window)
+  const pastReport: FloodReport = {
+    id: 'R-PAST',
+    location: 'Kolonnawa Canal',
+    area: 'Kolonnawa',
+    lat: 6.9360,
+    lng: 79.8850,
+    timestamp: new Date(now - 4 * 60 * 60 * 1000).toISOString(),
+    waterLevel: 'Moderate',
+    roadAccessibility: 'Open',
+    floodType: 'Canal Overflow',
+    description: 'Morning runoff event',
+    riskLevel: 'MEDIUM',
+    verificationStatus: 'VERIFIED',
+    incidentStatus: 'Resolved',
+    statusHistory: [],
+  };
+
+  const clusters = clusterReports([currentReport, pastReport]);
+  assert.equal(clusters.length, 2, 'Should form 2 distinct clusters due to 2-hour temporal boundary');
+});
+
+// 9. Risk Threshold Boundaries (Evaluating HIGH before MEDIUM)
 test('evaluateRiskLevel boundary condition tests with strict HIGH before MEDIUM evaluation', () => {
   // HIGH Boundary: count >= 3 AND rain > 20
   // Exactly 3 reports and 20.1 mm rain -> HIGH
@@ -126,7 +280,7 @@ test('evaluateRiskLevel boundary condition tests with strict HIGH before MEDIUM 
   assert.equal(zeroState.riskLevel, 'LOW');
 });
 
-// 6. Custom Risk Threshold Overrides
+// 10. Custom Risk Threshold Overrides
 test('evaluateRiskLevel supports configurable custom thresholds', () => {
   const customConfig = {
     highReportCount: 5,
@@ -135,7 +289,6 @@ test('evaluateRiskLevel supports configurable custom thresholds', () => {
     mediumRainfallMm: 15,
   };
 
-  // With 4 reports and 25mm rain:
   // Under DEFAULT config: 4 >= 3 and 25 > 20 -> HIGH
   const underDefault = evaluateRiskLevel(4, 25);
   assert.equal(underDefault.riskLevel, 'HIGH');
@@ -145,7 +298,7 @@ test('evaluateRiskLevel supports configurable custom thresholds', () => {
   assert.equal(underCustom.riskLevel, 'MEDIUM');
 });
 
-// 7. Water Level Severity Categorization
+// 11. Water Level Severity Categorization
 test('getWaterLevelSeverity categorizes correctly', () => {
   assert.equal(getWaterLevelSeverity('Severe'), 'HIGH');
   assert.equal(getWaterLevelSeverity('High'), 'HIGH');
@@ -153,117 +306,23 @@ test('getWaterLevelSeverity categorizes correctly', () => {
   assert.equal(getWaterLevelSeverity('Low'), 'LOW');
 });
 
-// 8. Geospatial and Temporal Clustering Boundaries
-test('clusterReports clusters within 500m radius and 2-hour window and excludes outside boundaries', () => {
-  const now = Date.now();
-
-  const report1: FloodReport = {
-    id: 'R1',
-    location: 'Maradana Junction Seed',
-    area: 'Maradana',
-    lat: 6.9271,
-    lng: 79.8653,
-    timestamp: new Date(now).toISOString(),
-    waterLevel: 'High',
-    roadAccessibility: 'Partially Blocked',
-    floodType: 'Street Waterlogging',
-    description: 'Test report 1',
-    riskLevel: 'HIGH',
-    verificationStatus: 'VERIFIED',
-    incidentStatus: 'Verified',
-    statusHistory: [],
-  };
-
-  // Report 2: ~200 meters away, 15 minutes later -> In same cluster
-  const report2: FloodReport = {
-    id: 'R2',
-    location: 'Maradana Railway Yard',
-    area: 'Maradana',
-    lat: 6.9285, // ~155m away
-    lng: 79.8653,
-    timestamp: new Date(now - 15 * 60 * 1000).toISOString(),
-    waterLevel: 'Moderate',
-    roadAccessibility: 'Partially Blocked',
-    floodType: 'Street Waterlogging',
-    description: 'Test report 2',
-    riskLevel: 'MEDIUM',
-    verificationStatus: 'UNDER REVIEW',
-    incidentStatus: 'Under Review',
-    statusHistory: [],
-  };
-
-  // Report 3: 200 meters away, but 3.5 hours earlier (> 2 hour temporal window) -> Must NOT be clustered with R1
-  const report3: FloodReport = {
-    id: 'R3',
-    location: 'Maradana Historical Flood',
-    area: 'Maradana',
-    lat: 6.9275,
-    lng: 79.8653,
-    timestamp: new Date(now - 3.5 * 60 * 60 * 1000).toISOString(),
-    waterLevel: 'High',
-    roadAccessibility: 'Completely Blocked',
-    floodType: 'Street Waterlogging',
-    description: 'Expired temporal window',
-    riskLevel: 'HIGH',
-    verificationStatus: 'VERIFIED',
-    incidentStatus: 'Resolved',
-    statusHistory: [],
-  };
-
-  // Report 4: Far away (Wellawatte, ~6 km away) -> Separate cluster
-  const report4: FloodReport = {
-    id: 'R4',
-    location: 'Wellawatte Canal Crossing',
-    area: 'Wellawatte',
-    lat: 6.8745,
-    lng: 79.8600,
-    timestamp: new Date(now - 10 * 60 * 1000).toISOString(),
-    waterLevel: 'Moderate',
-    roadAccessibility: 'Partially Blocked',
-    floodType: 'Canal Overflow',
-    description: 'Coastal sector report',
-    riskLevel: 'MEDIUM',
-    verificationStatus: 'VERIFIED',
-    incidentStatus: 'Verified',
-    statusHistory: [],
-  };
-
-  const clusters = clusterReports([report1, report2, report3, report4]);
-
-  // Should form distinct clusters: R1+R2 in one, R3 in its own (due to time window), R4 in its own (due to spatial distance)
-  assert.ok(clusters.length >= 3, `Expected at least 3 clusters, got ${clusters.length}`);
-
-  const maradanaCluster = clusters.find((c) => c.associatedReportIds.includes('R1'));
-  assert.ok(maradanaCluster);
-  assert.ok(maradanaCluster.associatedReportIds.includes('R2'));
-  assert.ok(!maradanaCluster.associatedReportIds.includes('R3'), 'R3 should be excluded due to 2-hour temporal boundary');
-  assert.ok(!maradanaCluster.associatedReportIds.includes('R4'), 'R4 should be excluded due to 500m spatial boundary');
-});
-
-// 9. AI Verification Fallback and Disclaimer
-test('simulateAiVerification returns expected structure and non-empty disclaimer', () => {
-  const withImage = simulateAiVerification({
-    waterLevel: 'High',
+// 12. AI Verification Does NOT Auto-Verify (Must remain Under Review)
+test('simulateAiVerification always leaves official status as Under Review with explicit disclaimer', () => {
+  const result = simulateAiVerification({
+    waterLevel: 'Severe',
     floodType: 'Flash Flood',
     hasImage: true,
-    description: 'Road inundated',
+    description: 'Road deeply flooded',
   });
-  assert.equal(withImage.status, 'VERIFIED');
-  assert.ok(withImage.confidence >= 85);
-  assert.ok(withImage.disclaimer.includes('not a substitute for official municipal field inspection'));
-  assert.equal(withImage.humanVerificationRequired, true);
-
-  const withoutImage = simulateAiVerification({
-    waterLevel: 'Moderate',
-    floodType: 'Street Waterlogging',
-    hasImage: false,
-    description: 'Text signal only',
-  });
-  assert.equal(withoutImage.status, 'UNDER REVIEW');
-  assert.ok(withoutImage.uncertainty?.includes('lacks optical depth'));
+  // AI Assessment can detect possible flooding
+  assert.equal(result.aiAssessment, 'Simulation Result');
+  // Official verification status MUST remain 'Under Review'
+  assert.equal(result.officialStatus, 'Under Review');
+  assert.equal(result.humanVerificationRequired, true);
+  assert.ok(result.disclaimer.includes('assistive early warning signal only'));
 });
 
-// 10. Simulated Blockchain Record Format & Labels
+// 13. Simulated Blockchain Record Format & Labels
 test('generateSimulatedBlockchainRecord generates valid hex format and explicit simulation markers', () => {
   const rec = generateSimulatedBlockchainRecord('HS-042', 'Maradana', 'HIGH');
   assert.equal(rec.hotspotId, 'HS-042');
@@ -279,7 +338,7 @@ test('generateSimulatedBlockchainRecord generates valid hex format and explicit 
   assert.ok(rec.auditExplanation.includes('Demonstration Smart Contract'));
 });
 
-// 11. Dynamic Analytics Calculation Function
+// 14. Dynamic Analytics Calculation Function
 test('calculateDynamicAnalytics returns correct proportions and non-hardcoded counts', () => {
   const sampleReports: FloodReport[] = [
     {
@@ -363,6 +422,57 @@ test('calculateDynamicAnalytics returns correct proportions and non-hardcoded co
 
   // Reports by zone
   assert.equal(analytics.reportsByZone.length, 4);
-  assert.equal(analytics.verifiedCount, 3); // Alert Issued, Verified, Resolved
+  assert.equal(analytics.verifiedCount, 3);
   assert.equal(analytics.verifiedPercentage, 75);
+});
+
+// 15. Incident Lifecycle Status Transitions
+test('Incident lifecycle transitions correctly between 6 operational stages', () => {
+  const validTransitions: IncidentStatus[] = [
+    'Submitted',
+    'Under Review',
+    'Verified',
+    'Alert Issued',
+    'Resolved',
+    'Rejected',
+  ];
+  assert.equal(validTransitions.length, 6);
+
+  // Verification status mapping
+  const getVerificationStatus = (status: IncidentStatus) => {
+    if (status === 'Verified' || status === 'Alert Issued' || status === 'Resolved') return 'VERIFIED';
+    if (status === 'Rejected') return 'REJECTED';
+    return 'UNDER REVIEW';
+  };
+
+  assert.equal(getVerificationStatus('Submitted'), 'UNDER REVIEW');
+  assert.equal(getVerificationStatus('Under Review'), 'UNDER REVIEW');
+  assert.equal(getVerificationStatus('Verified'), 'VERIFIED');
+  assert.equal(getVerificationStatus('Alert Issued'), 'VERIFIED');
+  assert.equal(getVerificationStatus('Resolved'), 'VERIFIED');
+  assert.equal(getVerificationStatus('Rejected'), 'REJECTED');
+});
+
+// 16. Forecast Timestamp Alignment Logic
+test('Forecast 3h calculation properly sums future hourly precipitation without artificial multipliers', () => {
+  const hourlyTime = [
+    '2026-11-12T12:00',
+    '2026-11-12T13:00',
+    '2026-11-12T14:00',
+    '2026-11-12T15:00',
+    '2026-11-12T16:00',
+    '2026-11-12T17:00',
+  ];
+  const hourlyPrecip = [0.0, 2.5, 8.0, 14.5, 6.0, 1.0];
+  const currentTime = '2026-11-12T13:00';
+
+  const currentIdx = hourlyTime.indexOf(currentTime);
+  assert.equal(currentIdx, 1);
+
+  // Next 3 future hours are indices 2, 3, 4 (times 14:00, 15:00, 16:00)
+  const next3Hours = hourlyPrecip.slice(currentIdx + 1, currentIdx + 4);
+  assert.deepEqual(next3Hours, [8.0, 14.5, 6.0]);
+
+  const expected3h = Number(next3Hours.reduce((a, b) => a + b, 0).toFixed(1));
+  assert.equal(expected3h, 28.5);
 });

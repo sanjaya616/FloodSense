@@ -16,6 +16,15 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    // Officers are validated strictly via custom token claims or trusted server document
+    function isOfficer() {
+      return isSignedIn() && (
+        request.auth.token.role == 'officer' ||
+        request.auth.token.officer == true ||
+        exists(/databases/$(database)/documents/officers/$(request.auth.uid))
+      );
+    }
+
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -28,62 +37,93 @@ service cloud.firestore {
       return resource.data;
     }
 
+    // Coordinate validation helper
+    function isValidCoordinates(lat, lng) {
+      return lat is number && lat >= -90.0 && lat <= 90.0
+        && lng is number && lng >= -180.0 && lng <= 180.0;
+    }
+
     // Validate FloodReport payload structure
     function isValidReport(data) {
-      return data.keys().hasAll(['id', 'location', 'area', 'lat', 'lng', 'waterLevel', 'roadAccessibility', 'floodType', 'riskLevel', 'verificationStatus'])
+      return data.keys().hasAll(['id', 'location', 'area', 'lat', 'lng', 'waterLevel', 'roadAccessibility', 'floodType', 'riskLevel', 'incidentStatus', 'reporterId'])
         && data.id is string && data.id.size() <= 64
         && data.location is string && data.location.size() <= 200
         && data.area is string && data.area.size() <= 80
-        && data.lat is number
-        && data.lng is number
+        && isValidCoordinates(data.lat, data.lng)
         && data.waterLevel in ['Low', 'Moderate', 'High', 'Severe']
         && data.roadAccessibility in ['Open', 'Partially Blocked', 'Completely Blocked']
         && data.floodType in ['Street Waterlogging', 'Flash Flood', 'Canal Overflow', 'Drainage Blockage']
         && data.riskLevel in ['HIGH', 'MEDIUM', 'LOW']
-        && data.verificationStatus in ['VERIFIED', 'UNDER REVIEW', 'REJECTED'];
+        && data.incidentStatus in ['Submitted', 'Under Review', 'Verified', 'Alert Issued', 'Resolved', 'Rejected']
+        && data.reporterId is string && data.reporterId.size() <= 128;
     }
 
-    // Users collection: Private user accounts with role mapping
+    // Users collection: Private user accounts
+    // Users CANNOT assign themselves roles or modify role attributes
     match /users/{userId} {
-      allow get: if isOwner(userId);
-      allow list: if false; // Disallow list to prevent user directory harvesting
+      allow get: if isOwner(userId) || isOfficer();
+      allow list: if isOfficer();
       allow create, update: if isOwner(userId)
         && isValidId(userId)
         && incoming().uid == userId
-        && incoming().role in ['officer', 'citizen'];
-      allow delete: if isOwner(userId);
+        // Enforce role immutability from client: users cannot self-assign role or officer privileges
+        && (!('role' in incoming()) || (existing() != null && incoming().role == existing().role))
+        && (!('isOfficer' in incoming()) || (existing() != null && incoming().isOfficer == existing().isOfficer));
+      allow delete: if isOwner(userId) || isOfficer();
     }
 
-    // Reports collection: Public read for civilian safety; authenticated create
+    // Trusted Officers Registry (Managed strictly by Firebase Admin SDK server-side)
+    match /officers/{officerId} {
+      allow read: if isOfficer();
+      allow write: if false; // Only server-side Firebase Admin SDK can grant officer privileges
+    }
+
+    // Reports collection: Full incident reports with reporter PII
+    // PII Protection: Only the creator of the report or an authorized officer can read full reports
     match /reports/{reportId} {
-      allow read: if true;
+      allow get: if isSignedIn() && (resource.data.reporterId == request.auth.uid || isOfficer());
+      allow list: if isSignedIn() && (resource.data.reporterId == request.auth.uid || isOfficer());
+      
+      // Citizen report submission: Must be authenticated and reporterId must match request.auth.uid
       allow create: if isSignedIn()
-        && isValidId(reportId)
-        && isValidReport(incoming());
-      allow update: if isSignedIn()
         && isValidId(reportId)
         && isValidReport(incoming())
-        && (
-          // Reporter editing description or officers verifying
-          incoming().diff(existing()).affectedKeys().hasOnly(['verificationStatus', 'riskLevel', 'aiConfidence', 'aiClassification', 'description'])
-        );
-      allow delete: if isSignedIn() && existing().createdBy == request.auth.uid;
+        && incoming().reporterId == request.auth.uid
+        && incoming().incidentStatus == 'Submitted';
+
+      // Updates:
+      // 1. Citizen updating description while still 'Submitted'
+      // 2. Authorized officer updating official verification and incident status
+      allow update: if isValidId(reportId) && isValidReport(incoming()) && (
+        (isOwner(existing().reporterId) && existing().incidentStatus == 'Submitted'
+          && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'imageUrl'])) ||
+        (isOfficer()
+          && incoming().diff(existing()).affectedKeys().hasOnly(['incidentStatus', 'verificationStatus', 'officerNotes', 'statusHistory', 'verificationTimestamp', 'verifiedBy', 'riskLevel', 'aiConfidence', 'aiClassification']))
+      );
+
+      // Deletion: Only owner (if not verified yet) or officer
+      allow delete: if (isOwner(existing().reporterId) && existing().incidentStatus == 'Submitted') || isOfficer();
     }
 
-    // Hotspots collection: Public read; authenticated sync
+    // Public sanitized incident reports (Used for public GIS maps - ZERO PII: No phone numbers, no emails)
+    match /public_reports/{reportId} {
+      allow read: if true; // Public access for citizen flood awareness
+      allow create, update: if isSignedIn() && isValidId(reportId)
+        && (!('reporterPhone' in incoming()))
+        && (!('reporterEmail' in incoming()));
+      allow delete: if isOfficer();
+    }
+
+    // Hotspots collection: Public read for early warning; updates restricted to authorized officers / backend
     match /hotspots/{hotspotId} {
       allow read: if true;
-      allow create, update: if isSignedIn()
-        && isValidId(hotspotId)
-        && incoming().reportCount is number
-        && incoming().riskLevel in ['HIGH', 'MEDIUM', 'LOW'];
-      allow delete: if false; // Hotspot clusters are permanent municipal records
+      allow create, update, delete: if isOfficer();
     }
 
-    // Blockchain Event Registry: Public read for auditability; append-only
+    // Blockchain Event Registry: Public read for auditability; append-only by authorized officers
     match /blockchain_records/{recordId} {
       allow read: if true;
-      allow create: if isSignedIn()
+      allow create: if isOfficer()
         && isValidId(recordId)
         && incoming().txHash is string;
       allow update, delete: if false; // Truly immutable audit records

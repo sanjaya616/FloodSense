@@ -10,25 +10,21 @@ import {
   UploadCloud,
   MapPin,
   Compass,
-  Droplets,
-  AlertTriangle,
   FileCheck,
   CheckCircle2,
   Trash2,
   RefreshCw,
-  Image as ImageIcon,
   Cpu,
-  Layers,
   ArrowRight,
-  ShieldCheck,
   Info,
   Lock,
   AlertCircle,
 } from 'lucide-react';
 import { simulateAiVerification, validateCoordinates } from '../utils/floodLogic';
+import { FLOOD_IMAGES } from '../assets/images';
 
 export const ReportFloodPage: React.FC = () => {
-  const { addReport } = useFlood();
+  const { addReport, dbOperationStatus } = useFlood();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -44,12 +40,12 @@ export const ReportFloodPage: React.FC = () => {
   const [reporterName, setReporterName] = useState('');
   const [reporterPhone, setReporterPhone] = useState('');
 
-  // Image Upload state & validation
-  const [imagePreview, setImagePreview] = useState<string | null>('/src/assets/images/flood_street_water_1794422510568.jpg');
-  const [imageMeta, setImageMeta] = useState<{ name: string; size: string }>({
-    name: 'colombo_monsoon_field_sample.jpg',
-    size: '1.42 MB',
-  });
+  // Image Upload state & validation (Starts EMPTY as requested in Phase 3)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imageBase64, setImageBase64] = useState<string | null>(null);
+  const [imageMimeType, setImageMimeType] = useState<string>('image/jpeg');
+  const [imageMeta, setImageMeta] = useState<{ name: string; size: string } | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -69,6 +65,7 @@ export const ReportFloodPage: React.FC = () => {
     aiClassification: string;
     explanation: string;
     isDuplicate?: boolean;
+    duplicateOfId?: string;
   } | null>(null);
 
   // Area preset coordinates
@@ -92,27 +89,32 @@ export const ReportFloodPage: React.FC = () => {
   const processFile = (file: File) => {
     setImageError(null);
 
-    // Validate type
+    // Validate type (JPG, JPEG, PNG, WEBP)
     const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
-    if (!validTypes.includes(file.type)) {
+    if (!validTypes.includes(file.type.toLowerCase())) {
       setImageError('Invalid file format. Please upload JPG, PNG, or WEBP images only.');
       return;
     }
 
-    // Validate size (max 10MB)
-    const maxSize = 10 * 1024 * 1024;
+    // Validate size (max 5MB for actual uploads as required by Phase 3)
+    const maxSize = 5 * 1024 * 1024;
     if (file.size > maxSize) {
-      setImageError('File size exceeds 10MB limit. Please choose a smaller photograph.');
+      setImageError('File size exceeds the 5MB upload limit. Please select a smaller photograph.');
       return;
     }
 
+    setSelectedFile(file);
+    setImageMimeType(file.type.toLowerCase());
+    setImageMeta({
+      name: file.name,
+      size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+    });
+
     const reader = new FileReader();
     reader.onload = () => {
-      setImagePreview(reader.result as string);
-      setImageMeta({
-        name: file.name,
-        size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-      });
+      const dataUrl = reader.result as string;
+      setImagePreview(dataUrl);
+      setImageBase64(dataUrl);
     };
     reader.readAsDataURL(file);
   };
@@ -150,14 +152,35 @@ export const ReportFloodPage: React.FC = () => {
         setIsLocating(false);
         setGpsSuccess(true);
       },
-      (err) => {
+      () => {
         setIsLocating(false);
         setGpsError(
-          'Location access permission denied or timed out. Please select your sector manually below.'
+          'Location access permission was not granted. Please select your sector manually below.'
         );
       },
       { timeout: 10000, enableHighAccuracy: true }
     );
+  };
+
+  // Pre-load demonstration image preset
+  const selectPresetImage = async (url: string, name: string) => {
+    setImageError(null);
+    setImagePreview(url);
+    setImageMeta({ name, size: 'Demonstration Preset' });
+    setSelectedFile(null);
+
+    try {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      setImageMimeType(blob.type || 'image/jpeg');
+      const reader = new FileReader();
+      reader.onload = () => {
+        setImageBase64(reader.result as string);
+      };
+      reader.readAsDataURL(blob);
+    } catch {
+      setImageBase64(null);
+    }
   };
 
   // Preview AI heuristic
@@ -197,7 +220,9 @@ export const ReportFloodPage: React.FC = () => {
         reporterName: reporterName.trim() || 'Community Contributor',
         reporterPhone: reporterPhone.trim(),
         reporterId: 'citizen_active_session',
-        customImage: imagePreview || undefined,
+        imageFile: selectedFile || undefined,
+        customImage: imageBase64 || undefined,
+        imageMimeType,
       });
 
       setIsSubmitting(false);
@@ -205,12 +230,13 @@ export const ReportFloodPage: React.FC = () => {
         id: result.report.id,
         hotspotId: result.hotspot.id,
         method: result.report.aiVerificationDetails?.method || 'AI Early Verification',
-        aiConfidence: result.report.aiConfidence || 94.2,
-        aiClassification: result.report.aiClassification || 'Street Waterlogging',
+        aiConfidence: result.report.aiConfidence || 92.0,
+        aiClassification: result.report.aiClassification || result.report.aiVerificationDetails?.aiAssessment || 'Possible Flooding Detected',
         explanation:
           result.report.aiVerificationDetails?.explanation ||
-          'Automated inspection detected high-probability inundation. Cluster updated.',
+          'Automated inspection completed. Incident queued for official officer verification.',
         isDuplicate: result.isDuplicate,
+        duplicateOfId: result.duplicateOfId,
       });
     } catch (err: any) {
       setIsSubmitting(false);
@@ -225,6 +251,9 @@ export const ReportFloodPage: React.FC = () => {
     setRoadAccessibility('Partially Blocked');
     setFloodType('Street Waterlogging');
     setImagePreview(null);
+    setImageBase64(null);
+    setSelectedFile(null);
+    setImageMeta(null);
     setImageError(null);
     setSubmissionError(null);
     setSubmittedResult(null);
@@ -277,12 +306,13 @@ export const ReportFloodPage: React.FC = () => {
                 <p className="text-xs text-slate-600 mt-1">
                   Assigned to Hotspot:{' '}
                   <strong className="text-slate-800 font-mono">{submittedResult.hotspotId}</strong>.
-                  Visible across the live GIS map, EOC overview, and officer dispatch board.
+                  Status: <strong className="text-amber-700">Under Review</strong> (Awaiting official officer confirmation).
                 </p>
 
                 {submittedResult.isDuplicate && (
-                  <p className="text-xs text-amber-800 bg-amber-100 p-2 rounded-lg mt-2 font-medium">
-                    Notice: An existing report was detected within 25 meters and 5 minutes. Aggregated into existing spatial cluster.
+                  <p className="text-xs text-amber-800 bg-amber-100 p-2.5 rounded-lg mt-2 font-medium">
+                    Notice: An existing report was detected within 25 meters and 5 minutes (Original: {submittedResult.duplicateOfId}).
+                    Your submission has been cataloged as an audited duplicate without distorting unique citizen counts.
                   </p>
                 )}
 
@@ -370,6 +400,9 @@ export const ReportFloodPage: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setImagePreview(null);
+                      setImageBase64(null);
+                      setSelectedFile(null);
+                      setImageMeta(null);
                       if (fileInputRef.current) fileInputRef.current.value = '';
                     }}
                     className="absolute top-2 right-2 p-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors shadow-md"
@@ -379,10 +412,12 @@ export const ReportFloodPage: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between text-xs text-slate-600 bg-white p-2.5 rounded-lg border border-slate-200">
-                  <span className="font-medium truncate max-w-[200px]">{imageMeta.name}</span>
-                  <span className="font-mono text-slate-400">{imageMeta.size}</span>
-                </div>
+                {imageMeta && (
+                  <div className="flex items-center justify-between text-xs text-slate-600 bg-white p-2.5 rounded-lg border border-slate-200">
+                    <span className="font-medium truncate max-w-[200px]">{imageMeta.name}</span>
+                    <span className="font-mono text-slate-400">{imageMeta.size}</span>
+                  </div>
+                )}
 
                 <button
                   type="button"
@@ -408,42 +443,33 @@ export const ReportFloodPage: React.FC = () => {
                   <span className="text-xs text-slate-500"> or drag and drop image here</span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Validated formats: JPG, JPEG, PNG, WEBP (Maximum size: 10MB)
+                  Validated formats: JPG, JPEG, PNG, WEBP (Maximum size: 5MB)
                 </p>
 
-                {/* Pre-loaded sample presets for quick demo */}
+                {/* Pre-loaded sample presets for quick academic evaluation */}
                 <div className="pt-2 border-t border-slate-200/80">
                   <span className="text-[10px] text-slate-400 block mb-1">
-                    Or select demonstration photo:
+                    Or select demonstration photo preset:
                   </span>
                   <div className="flex items-center justify-center gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        setImagePreview('/src/assets/images/flood_street_water_1794422510568.jpg');
-                        setImageMeta({ name: 'maradana_street_flood.jpg', size: '1.42 MB' });
-                      }}
-                      className="text-[10px] px-2 py-1 bg-white border border-slate-200 rounded text-slate-700 hover:bg-slate-100"
+                      onClick={() => selectPresetImage(FLOOD_IMAGES.streetWater, 'maradana_street_flood.jpg')}
+                      className="text-[10px] px-2.5 py-1 bg-white border border-slate-200 rounded text-slate-700 hover:bg-slate-100 font-medium"
                     >
                       Street Flood
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        setImagePreview('/src/assets/images/flood_junction_inundation_1794422511158.jpg');
-                        setImageMeta({ name: 'junction_inundation.jpg', size: '1.18 MB' });
-                      }}
-                      className="text-[10px] px-2 py-1 bg-white border border-slate-200 rounded text-slate-700 hover:bg-slate-100"
+                      onClick={() => selectPresetImage(FLOOD_IMAGES.junctionInundation, 'junction_inundation.jpg')}
+                      className="text-[10px] px-2.5 py-1 bg-white border border-slate-200 rounded text-slate-700 hover:bg-slate-100 font-medium"
                     >
                       Junction Flood
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        setImagePreview('/src/assets/images/flood_canal_drainage_1794422511595.jpg');
-                        setImageMeta({ name: 'canal_overflow.jpg', size: '1.85 MB' });
-                      }}
-                      className="text-[10px] px-2 py-1 bg-white border border-slate-200 rounded text-slate-700 hover:bg-slate-100"
+                      onClick={() => selectPresetImage(FLOOD_IMAGES.canalDrainage, 'canal_overflow.jpg')}
+                      className="text-[10px] px-2.5 py-1 bg-white border border-slate-200 rounded text-slate-700 hover:bg-slate-100 font-medium"
                     >
                       Canal Breach
                     </button>
@@ -595,8 +621,7 @@ export const ReportFloodPage: React.FC = () => {
               </div>
 
               <div className="mt-3 text-[11px] text-slate-500 leading-tight">
-                Reports within 500m are aggregated into automated disaster management response
-                hotspots.
+                Reports within 500m and 2 hours are clustered algorithmically into disaster management response hotspots.
               </div>
             </div>
           </div>
@@ -734,7 +759,7 @@ export const ReportFloodPage: React.FC = () => {
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">
-                Contact Phone (Optional - For Officer Follow-up)
+                Contact Phone (Optional - Protected PII)
               </label>
               <input
                 type="tel"
@@ -747,7 +772,7 @@ export const ReportFloodPage: React.FC = () => {
           </div>
         </div>
 
-        {/* SECTION D — AI Early Verification Preview */}
+        {/* SECTION D — AI Early Verification Pipeline */}
         <div className="p-6 bg-slate-50/70">
           <div className="flex items-center justify-between mb-3">
             <div>
@@ -759,7 +784,7 @@ export const ReportFloodPage: React.FC = () => {
                 <span>AI Verification Pipeline & Multimodal Processing</span>
               </h3>
               <p className="text-xs text-slate-500">
-                Uploaded images will be verified by Gemini 3.8 Flash or prototype heuristic.
+                Uploaded images are analyzed server-side with Gemini 3.8 Flash (or academic simulation heuristic).
               </p>
             </div>
             <span className="text-[10px] font-mono bg-cyan-100 text-cyan-800 font-bold px-2 py-0.5 rounded">
@@ -769,26 +794,20 @@ export const ReportFloodPage: React.FC = () => {
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-2 text-xs">
             <div className="flex items-center justify-between">
-              <span className="font-semibold text-slate-700">Classification Hypothesis:</span>
-              <span className="font-bold text-cyan-800">{aiPreview.assessment}</span>
+              <span className="font-semibold text-slate-700">AI Assessment Hypothesis:</span>
+              <span className="font-bold text-cyan-800">{aiPreview.aiAssessment}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-700">Initial Pipeline Status:</span>
-              <span
-                className={`font-bold px-2 py-0.5 rounded ${
-                  aiPreview.status === 'VERIFIED'
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-amber-100 text-amber-800'
-                }`}
-              >
-                {aiPreview.status}
+              <span className="font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800">
+                Under Review (Human Officer Confirmation Required)
               </span>
             </div>
             <p className="text-[11px] text-slate-500 pt-2 border-t border-slate-100">
               {aiPreview.explanation}
             </p>
             <div className="text-[10px] text-amber-800 bg-amber-50 p-2 rounded font-medium border border-amber-200">
-              Disclaimer: {aiPreview.disclaimer}
+              Notice: {aiPreview.disclaimer}
             </div>
           </div>
         </div>
@@ -807,13 +826,13 @@ export const ReportFloodPage: React.FC = () => {
           <div className="flex items-center gap-3">
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || dbOperationStatus.loading}
               className="px-6 py-2.5 bg-cyan-600 hover:bg-cyan-700 text-white font-bold text-xs rounded-xl transition-all shadow-md shadow-cyan-600/25 flex items-center gap-2 disabled:opacity-50"
             >
-              {isSubmitting ? (
+              {isSubmitting || dbOperationStatus.loading ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Processing & Verifying Incident...</span>
+                  <span>Processing & Uploading Incident...</span>
                 </>
               ) : (
                 <>

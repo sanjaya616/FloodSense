@@ -91,7 +91,15 @@
     },
     "/reports/{reportId}": {
       "schema": { "$ref": "#/entities/FloodReport" },
-      "description": "Flood reports submitted by public citizens or verified by emergency personnel"
+      "description": "Full flood reports with citizen details, accessible only by author and officers"
+    },
+    "/public_reports/{reportId}": {
+      "schema": { "$ref": "#/entities/FloodReport" },
+      "description": "Sanitized public flood incident summaries without personal phone/email PII"
+    },
+    "/officers/{officerId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Server-administered officer credentials registry"
     },
     "/hotspots/{hotspotId}": {
       "schema": { "$ref": "#/entities/FloodHotspot" },

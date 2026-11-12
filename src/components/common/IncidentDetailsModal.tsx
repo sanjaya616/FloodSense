@@ -275,7 +275,7 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-slate-600">Classification Hypothesis:</span>
                 <span className="font-bold text-slate-900">
-                  {report.aiClassification ?? aiDetails?.assessment ?? 'Street Waterlogging'}
+                  {report.aiClassification ?? aiDetails?.aiAssessment ?? aiDetails?.assessment ?? 'Street Waterlogging'}
                 </span>
               </div>
 
