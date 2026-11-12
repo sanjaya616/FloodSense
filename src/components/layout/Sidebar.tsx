@@ -20,6 +20,8 @@ import {
   X,
   Droplets,
   BookOpen,
+  ClipboardCheck,
+  ArrowRight,
 } from 'lucide-react';
 import { useFlood } from '../../context/FloodContext';
 
@@ -29,19 +31,20 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
-  const { role, userProfile } = useFlood();
+  const { role, userProfile, switchPersona } = useFlood();
   const location = useLocation();
 
   const navItems = [
-    { name: 'Overview', path: '/', icon: LayoutDashboard },
-    { name: 'Live Flood Map', path: '/map', icon: Map },
-    { name: 'Report Flood', path: '/report', icon: PlusCircle, badge: 'Citizen' },
-    { name: 'Flood Hotspots', path: '/hotspots', icon: Flame },
-    { name: 'Risk Predictions', path: '/predictions', icon: Activity },
-    { name: 'Analytics', path: '/analytics', icon: BarChart3 },
-    { name: 'Blockchain Records', path: '/blockchain', icon: Link2, badge: 'Ledger' },
-    { name: 'Methodology & Data', path: '/methodology', icon: BookOpen },
-    { name: 'Settings', path: '/settings', icon: Settings },
+    { name: 'Overview', path: '/officer/overview', legacyPath: '/', icon: LayoutDashboard },
+    { name: 'Incident Review Queue', path: '/officer/incidents', icon: ClipboardCheck, badge: 'Triage' },
+    { name: 'Live Flood Map', path: '/officer/map', legacyPath: '/map', icon: Map },
+    { name: 'Report Flood', path: '/officer/report', legacyPath: '/report', icon: PlusCircle, badge: 'Field' },
+    { name: 'Flood Hotspots', path: '/officer/hotspots', legacyPath: '/hotspots', icon: Flame },
+    { name: 'Risk Predictions', path: '/officer/predictions', legacyPath: '/predictions', icon: Activity },
+    { name: 'Analytics', path: '/officer/analytics', legacyPath: '/analytics', icon: BarChart3 },
+    { name: 'Blockchain Records', path: '/officer/blockchain', legacyPath: '/blockchain', icon: Link2, badge: 'Ledger' },
+    { name: 'Methodology & Data', path: '/officer/methodology', legacyPath: '/methodology', icon: BookOpen },
+    { name: 'Settings', path: '/officer/settings', legacyPath: '/settings', icon: Settings },
   ];
 
   return (
@@ -98,7 +101,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             </div>
             {navItems.map((item) => {
               const Icon = item.icon;
-              const isActive = location.pathname === item.path;
+              const isActive = location.pathname === item.path || (item.legacyPath && location.pathname === item.legacyPath);
 
               return (
                 <NavLink
@@ -136,10 +139,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           </nav>
         </div>
 
-        {/* User Profile & Footer */}
-        <div className="p-4 border-t border-slate-800/80 bg-slate-900/40">
+        {/* User Profile & Switcher */}
+        <div className="p-4 border-t border-slate-800/80 bg-slate-900/40 space-y-3">
           <NavLink
-            to="/settings"
+            to="/officer/settings"
             onClick={onClose}
             className="flex items-center gap-3 p-2 rounded-xl hover:bg-slate-800/70 transition-colors group"
           >
@@ -162,7 +165,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             </div>
           </NavLink>
 
-          <div className="mt-3 pt-3 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-500">
+          <NavLink
+            to="/citizen"
+            onClick={() => {
+              switchPersona('citizen');
+              onClose();
+            }}
+            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-800 hover:bg-cyan-950/60 border border-slate-700 text-cyan-400 hover:text-cyan-300 text-xs font-semibold transition-all group"
+          >
+            <span>Switch to Citizen Portal</span>
+            <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+          </NavLink>
+
+          <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-500">
             <span className="font-mono">v1.2.0-academic</span>
             <span className="text-cyan-400 font-semibold">Colombo Metro</span>
           </div>

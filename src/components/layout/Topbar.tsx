@@ -25,7 +25,17 @@ interface TopbarProps {
 }
 
 export const Topbar: React.FC<TopbarProps> = ({ onToggleSidebar }) => {
-  const { role, userProfile, notifications, markAllNotificationsAsRead, markNotificationAsRead, searchQuery, setSearchQuery, dataSourceMode } = useFlood();
+  const {
+    role,
+    userProfile,
+    switchPersona,
+    notifications,
+    markAllNotificationsAsRead,
+    markNotificationAsRead,
+    searchQuery,
+    setSearchQuery,
+    dataSourceMode,
+  } = useFlood();
   const location = useLocation();
   const [showNotifications, setShowNotifications] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -53,22 +63,34 @@ export const Topbar: React.FC<TopbarProps> = ({ onToggleSidebar }) => {
   const getPageInfo = () => {
     switch (location.pathname) {
       case '/':
+      case '/officer':
+      case '/officer/overview':
         return { title: 'Flood Monitoring Overview', breadcrumb: 'Overview' };
+      case '/officer/incidents':
+        return { title: 'Citizen Incident Triage Queue', breadcrumb: 'Incident Queue' };
       case '/map':
+      case '/officer/map':
         return { title: 'Live Flood GIS Map', breadcrumb: 'Live Map' };
       case '/report':
-        return { title: 'Report Flood Incident', breadcrumb: 'Citizen Reporting' };
+      case '/officer/report':
+        return { title: 'Report Flood Incident', breadcrumb: 'Field Reporting' };
       case '/hotspots':
+      case '/officer/hotspots':
         return { title: 'Flood Hotspot Clusters', breadcrumb: 'Hotspots' };
       case '/predictions':
+      case '/officer/predictions':
         return { title: 'Predictive Flood Risk Analysis', breadcrumb: 'Risk Predictions' };
       case '/analytics':
+      case '/officer/analytics':
         return { title: 'Flood Intelligence & Analytics', breadcrumb: 'Analytics' };
       case '/blockchain':
+      case '/officer/blockchain':
         return { title: 'Blockchain Flood Event Registry', breadcrumb: 'Blockchain Registry' };
       case '/methodology':
+      case '/officer/methodology':
         return { title: 'System Methodology & Data Transparency', breadcrumb: 'Methodology' };
       case '/settings':
+      case '/officer/settings':
         return { title: 'System & Role Settings', breadcrumb: 'Settings' };
       default:
         return { title: 'Disaster Management Console', breadcrumb: 'Console' };
@@ -236,9 +258,19 @@ export const Topbar: React.FC<TopbarProps> = ({ onToggleSidebar }) => {
           )}
         </div>
 
+        {/* Switch to Citizen Portal Button */}
+        <NavLink
+          to="/citizen"
+          onClick={() => switchPersona('citizen')}
+          className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-xs font-bold border border-cyan-200 transition-colors"
+        >
+          <span>Citizen Portal</span>
+          <ChevronRight className="w-3.5 h-3.5 text-cyan-600" />
+        </NavLink>
+
         {/* User Avatar Mini Profile */}
         <NavLink
-          to="/settings"
+          to="/officer/settings"
           className="flex items-center gap-2 pl-2 border-l border-slate-200 group"
         >
           <img

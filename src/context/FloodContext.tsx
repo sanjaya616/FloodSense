@@ -29,7 +29,7 @@ import {
 import { FLOOD_IMAGES } from '../assets/images';
 import { floodService, DataSourceMode, WeatherData } from '../services/floodService';
 import { isFirebaseConfigured, testFirestoreConnection, auth } from '../services/firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 
 export interface UserProfile {
   name: string;
@@ -41,6 +41,26 @@ export interface UserProfile {
   emergencySector: string;
   isFirebaseUser?: boolean;
 }
+
+export const DEMO_OFFICER_PROFILE: UserProfile = {
+  name: 'Kasun Pereira',
+  roleName: 'Emergency Management Officer',
+  department: 'Disaster Management Centre (DMC) - Western Province',
+  email: 'k.pereira@dmc.gov.lk',
+  phone: '+94 11 213 6136',
+  avatarUrl: FLOOD_IMAGES.officerAvatar,
+  emergencySector: 'Sector 04 — Colombo Municipal Basin',
+};
+
+export const DEMO_CITIZEN_PROFILE: UserProfile = {
+  name: 'Nimalka Senanayake',
+  roleName: 'Citizen Reporter & Resident',
+  department: 'Colombo Metro Community Sentinel',
+  email: 'nimalka.senanayake@gmail.com',
+  phone: '+94 77 123 4567',
+  avatarUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=256',
+  emergencySector: 'Sector 02 — Kolonnawa & Colombo 03',
+};
 
 export type NotificationType =
   | 'NEW_REPORT'
@@ -71,6 +91,7 @@ export interface DbOperationStatus {
 
 export interface FloodContextType {
   reports: FloodReport[];
+  myReports: FloodReport[];
   hotspots: FloodHotspot[];
   blockchainRecords: BlockchainRecord[];
   weather: WeatherData;
@@ -79,6 +100,12 @@ export interface FloodContextType {
   setRole: (role: 'officer' | 'citizen') => void;
   userProfile: UserProfile;
   setUserProfile: React.Dispatch<React.SetStateAction<UserProfile>>;
+  isAuthenticated: boolean;
+  setIsAuthenticated: (auth: boolean) => void;
+  switchPersona: (persona: 'officer' | 'citizen') => void;
+  loginWithEmail: (email: string, password: string) => Promise<{ success: boolean; role: 'officer' | 'citizen'; message?: string }>;
+  registerWithEmail: (name: string, email: string, password: string, phone?: string) => Promise<{ success: boolean; message?: string }>;
+  logout: () => Promise<void>;
   selectedHotspotId: string | null;
   setSelectedHotspotId: (id: string | null) => void;
   selectedReportId: string | null;
@@ -204,7 +231,15 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const saved = localStorage.getItem(STORAGE_KEY_ROLE);
       if (saved === 'officer' || saved === 'citizen') return saved;
     } catch {}
-    return 'officer';
+    return 'citizen';
+  });
+
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('floodsense_auth_v2');
+      if (saved !== null) return saved === 'true';
+    } catch {}
+    return true;
   });
 
   const [userProfile, setUserProfile] = useState<UserProfile>(() => {
@@ -212,15 +247,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const saved = localStorage.getItem(STORAGE_KEY_PROFILE);
       if (saved) return JSON.parse(saved);
     } catch {}
-    return {
-      name: 'Kasun Pereira',
-      roleName: 'Emergency Management Officer',
-      department: 'Disaster Management Centre (DMC) - Western Province',
-      email: 'k.pereira@dmc.gov.lk',
-      phone: '+94 11 213 6136',
-      avatarUrl: FLOOD_IMAGES.officerAvatar,
-      emergencySector: 'Sector 04 — Colombo Municipal Basin',
-    };
+    return DEMO_CITIZEN_PROFILE;
   });
 
   const [weather, setWeather] = useState<WeatherData>({
@@ -497,6 +524,194 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
+  const myReports = reports.filter((r) => {
+    if (userProfile.email && (r.reporterId === userProfile.email || r.reporterId === 'citizen_demo_user')) return true;
+    if (userProfile.name && r.reporterName === userProfile.name) return true;
+    if (role === 'citizen') {
+      return (
+        r.reporterId === 'citizen_demo_user' ||
+        r.reporterName === 'Dinuka Senanayake' ||
+        r.reporterName === 'Kamal Perera' ||
+        r.reporterName === 'Nimalka Senanayake'
+      );
+    }
+    return true;
+  });
+
+  const switchPersona = (persona: 'officer' | 'citizen') => {
+    if (persona === 'officer') {
+      setRole('officer');
+      setUserProfile(DEMO_OFFICER_PROFILE);
+      setIsAuthenticated(true);
+      try {
+        localStorage.setItem('floodsense_auth_v2', 'true');
+        localStorage.setItem(STORAGE_KEY_ROLE, 'officer');
+        localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(DEMO_OFFICER_PROFILE));
+      } catch {}
+    } else {
+      setRole('citizen');
+      setUserProfile(DEMO_CITIZEN_PROFILE);
+      setIsAuthenticated(true);
+      try {
+        localStorage.setItem('floodsense_auth_v2', 'true');
+        localStorage.setItem(STORAGE_KEY_ROLE, 'citizen');
+        localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(DEMO_CITIZEN_PROFILE));
+      } catch {}
+    }
+  };
+
+  const loginWithEmail = async (email: string, password: string) => {
+    setDbOperationStatus({ loading: true, error: null, success: null });
+    const isOfficer = email.toLowerCase().includes('officer') || email.toLowerCase().includes('dmc');
+    const targetRole: 'officer' | 'citizen' = isOfficer ? 'officer' : 'citizen';
+
+    try {
+      if (dataSourceMode === 'FIREBASE' && isFirebaseConfigured() && auth) {
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        const fbUser = userCredential.user;
+        const profile: UserProfile = {
+          name: fbUser.displayName || (isOfficer ? 'DMC Officer' : 'Citizen Reporter'),
+          roleName: isOfficer ? 'Emergency Management Officer' : 'Citizen Reporter',
+          department: isOfficer ? 'Disaster Management Centre (DMC)' : 'Colombo Metro Community',
+          email: fbUser.email || email,
+          phone: fbUser.phoneNumber || (isOfficer ? '+94 11 213 6136' : '+94 77 123 4567'),
+          avatarUrl: isOfficer ? FLOOD_IMAGES.officerAvatar : 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=256',
+          emergencySector: isOfficer ? 'Sector 04 — Colombo Municipal Basin' : 'Western Province Sentinel',
+          isFirebaseUser: true,
+        };
+        setUserProfile(profile);
+      } else {
+        const profile = isOfficer ? { ...DEMO_OFFICER_PROFILE, email } : { ...DEMO_CITIZEN_PROFILE, email };
+        setUserProfile(profile);
+      }
+
+      setRole(targetRole);
+      setIsAuthenticated(true);
+      try {
+        localStorage.setItem('floodsense_auth_v2', 'true');
+        localStorage.setItem(STORAGE_KEY_ROLE, targetRole);
+      } catch {}
+
+      setDbOperationStatus({
+        loading: false,
+        error: null,
+        success: `Logged in successfully as ${isOfficer ? 'Emergency Officer' : 'Citizen Reporter'}.`,
+      });
+
+      return { success: true, role: targetRole };
+    } catch (err: any) {
+      if (dataSourceMode === 'DEMO' || !isFirebaseConfigured()) {
+        const profile = isOfficer ? { ...DEMO_OFFICER_PROFILE, email } : { ...DEMO_CITIZEN_PROFILE, email };
+        setUserProfile(profile);
+        setRole(targetRole);
+        setIsAuthenticated(true);
+        try {
+          localStorage.setItem('floodsense_auth_v2', 'true');
+          localStorage.setItem(STORAGE_KEY_ROLE, targetRole);
+        } catch {}
+        setDbOperationStatus({
+          loading: false,
+          error: null,
+          success: `Logged in as ${isOfficer ? 'Emergency Officer' : 'Citizen Reporter'}.`,
+        });
+        return { success: true, role: targetRole };
+      }
+
+      setDbOperationStatus({
+        loading: false,
+        error: err?.message || 'Authentication failed. Please verify credentials.',
+        success: null,
+      });
+      return { success: false, role: targetRole, message: err?.message };
+    }
+  };
+
+  const registerWithEmail = async (name: string, email: string, password: string, phone?: string) => {
+    setDbOperationStatus({ loading: true, error: null, success: null });
+    try {
+      if (dataSourceMode === 'FIREBASE' && isFirebaseConfigured() && auth) {
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        if (cred.user) {
+          await updateProfile(cred.user, { displayName: name });
+        }
+      }
+
+      const newCitizen: UserProfile = {
+        name,
+        roleName: 'Citizen Reporter & Resident',
+        department: 'Colombo Community Sentinel',
+        email,
+        phone: phone || '+94 77 123 4567',
+        avatarUrl: `https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256`,
+        emergencySector: 'Western Province — Citizen Sentinel',
+        isFirebaseUser: dataSourceMode === 'FIREBASE',
+      };
+
+      setUserProfile(newCitizen);
+      setRole('citizen');
+      setIsAuthenticated(true);
+      try {
+        localStorage.setItem('floodsense_auth_v2', 'true');
+        localStorage.setItem(STORAGE_KEY_ROLE, 'citizen');
+        localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(newCitizen));
+      } catch {}
+
+      setDbOperationStatus({
+        loading: false,
+        error: null,
+        success: `Account registered successfully for ${name}. Welcome to FloodSense!`,
+      });
+      return { success: true };
+    } catch (err: any) {
+      if (dataSourceMode === 'DEMO' || !isFirebaseConfigured()) {
+        const newCitizen: UserProfile = {
+          name,
+          roleName: 'Citizen Reporter & Resident',
+          department: 'Colombo Community Sentinel',
+          email,
+          phone: phone || '+94 77 123 4567',
+          avatarUrl: `https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256`,
+          emergencySector: 'Western Province — Citizen Sentinel',
+        };
+        setUserProfile(newCitizen);
+        setRole('citizen');
+        setIsAuthenticated(true);
+        try {
+          localStorage.setItem('floodsense_auth_v2', 'true');
+          localStorage.setItem(STORAGE_KEY_ROLE, 'citizen');
+          localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(newCitizen));
+        } catch {}
+        setDbOperationStatus({
+          loading: false,
+          error: null,
+          success: `Demo account created for ${name}.`,
+        });
+        return { success: true };
+      }
+      setDbOperationStatus({
+        loading: false,
+        error: err?.message || 'Registration failed.',
+        success: null,
+      });
+      return { success: false, message: err?.message };
+    }
+  };
+
+  const logout = async () => {
+    if (dataSourceMode === 'FIREBASE' && isFirebaseConfigured()) {
+      await floodService.logout();
+    }
+    setIsAuthenticated(false);
+    try {
+      localStorage.removeItem('floodsense_auth_v2');
+    } catch {}
+    setDbOperationStatus({
+      loading: false,
+      error: null,
+      success: 'Signed out successfully.',
+    });
+  };
+
   const loginWithGoogle = async () => {
     setDbOperationStatus({ loading: true, error: null, success: null });
     try {
@@ -508,6 +723,10 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           email: user.email,
           isFirebaseUser: true,
         }));
+        setIsAuthenticated(true);
+        try {
+          localStorage.setItem('floodsense_auth_v2', 'true');
+        } catch {}
         setDbOperationStatus({
           loading: false,
           error: null,
@@ -524,16 +743,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const logoutGoogle = async () => {
-    await floodService.logout();
-    setUserProfile((prev) => ({
-      ...prev,
-      isFirebaseUser: false,
-    }));
-    setDbOperationStatus({
-      loading: false,
-      error: null,
-      success: 'Signed out of Firebase account.',
-    });
+    await logout();
   };
 
   const markAllNotificationsAsRead = () => {
@@ -576,8 +786,16 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   ) => {
     setDbOperationStatus({ loading: true, error: null, success: null });
 
+    // Inject active user credentials if not explicitly passed
+    const enrichedInput = {
+      ...newReportData,
+      reporterName: newReportData.reporterName || userProfile.name,
+      reporterPhone: newReportData.reporterPhone || userProfile.phone,
+      reporterId: newReportData.reporterId || userProfile.email || 'citizen_demo_user',
+    };
+
     try {
-      const result = await floodService.submitReport(newReportData);
+      const result = await floodService.submitReport(enrichedInput);
 
       setReports((prev) => [result.report, ...prev]);
 
@@ -686,6 +904,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     <FloodContext.Provider
       value={{
         reports,
+        myReports,
         hotspots,
         blockchainRecords,
         weather,
@@ -694,6 +913,12 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setRole,
         userProfile,
         setUserProfile,
+        isAuthenticated,
+        setIsAuthenticated,
+        switchPersona,
+        loginWithEmail,
+        registerWithEmail,
+        logout,
         selectedHotspotId,
         setSelectedHotspotId,
         selectedReportId,
