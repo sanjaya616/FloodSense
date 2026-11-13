@@ -210,11 +210,31 @@ async function startServer() {
       description = '',
       waterLevel = 'Moderate',
       floodType = 'Street Waterlogging',
+      simulateFailure = false,
     } = req.body;
 
     const timestamp = new Date().toISOString();
     const disclaimer =
       'AI image assessment is an assistive early warning signal only. Official verification requires authorized emergency officer confirmation.';
+
+    if (simulateFailure) {
+      return res.status(503).json({
+        method: 'Gemini 3.8 Flash (Multimodal)',
+        modelName: 'gemini-3.8-flash',
+        aiStatus: 'FAILED',
+        hasVisibleFlooding: false,
+        aiAssessment: 'AI Processing Failed',
+        officialStatus: 'Under Review',
+        confidence: 0,
+        explanation: 'AI vision service temporarily unreachable. Report saved safely; please retry AI analysis or wait for officer inspection.',
+        uncertainty: 'Processing interrupted before image evaluation completed.',
+        waterLevelEstimated: waterLevel,
+        roadAccessibilityEstimated: 'Uncertain',
+        humanVerificationRequired: true,
+        timestamp,
+        disclaimer,
+      });
+    }
 
     // Validate MIME types
     const validMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
@@ -228,7 +248,9 @@ async function startServer() {
       return res.json({
         method: 'Demonstration Heuristic (No Image)',
         modelName: 'None',
-        aiAssessment: 'Uncertain',
+        aiStatus: 'COMPLETED',
+        hasVisibleFlooding: false,
+        aiAssessment: 'Uncertain Image',
         officialStatus: 'Under Review',
         confidence: 0,
         explanation: 'No photograph provided with report. Queued for human verification.',
@@ -239,6 +261,20 @@ async function startServer() {
         timestamp,
         disclaimer,
       });
+    }
+
+    // Resolve local /images/... paths if user picked a local demo photograph
+    let resolvedBase64 = imageBase64;
+    if (imageBase64.startsWith('/images/')) {
+      try {
+        const localPath = path.resolve(__dirname, 'public', imageBase64.replace(/^\//, ''));
+        if (fs.existsSync(localPath)) {
+          const buf = fs.readFileSync(localPath);
+          resolvedBase64 = buf.toString('base64');
+        }
+      } catch (e) {
+        console.warn('Could not load local demo image file for Gemini:', e);
+      }
     }
 
     // Process actual uploaded photograph with Gemini if key is present
@@ -253,31 +289,51 @@ async function startServer() {
           },
         });
 
-        const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z]+;base64,/, '').trim();
+        const cleanBase64 = resolvedBase64.replace(/^data:image\/[a-zA-Z]+;base64,/, '').trim();
 
         // Validate Base64 payload
         if (cleanBase64.length < 50) {
-          throw new Error('Image Base64 payload is too short or malformed.');
+          return res.json({
+            method: 'Gemini 3.8 Flash (Multimodal)',
+            modelName: 'gemini-3.8-flash',
+            aiStatus: 'COMPLETED',
+            hasVisibleFlooding: false,
+            aiAssessment: 'Invalid or Unusable Photograph',
+            officialStatus: 'Under Review',
+            confidence: 0,
+            explanation: 'Uploaded image payload was corrupt or unreadable for visual flood assessment.',
+            uncertainty: 'Unusable image data. Please upload a clear photograph or await officer review.',
+            waterLevelEstimated: waterLevel,
+            roadAccessibilityEstimated: 'Uncertain',
+            humanVerificationRequired: true,
+            timestamp,
+            disclaimer,
+          });
         }
 
         const prompt = `You are the AI verification engine for FloodSense, an urban disaster management prototype for Colombo, Sri Lanka.
-Analyze this submitted photograph.
+Analyze this submitted photograph carefully.
 Citizen submission context:
 - Claimed Water Level: "${waterLevel}"
 - Flood Type: "${floodType}"
 - Description: "${description}"
 
-Determine whether visible street flooding, standing water, submerged curbs, waterlogged intersections, or drainage overflow is present.
+Examine whether:
+- Visible flooding or standing water exists
+- Road surfaces or curbs/pedestrian paths are submerged
+- Vehicles are affected or drainage overflow is visible
+- Photograph is unclear, dark, unrelated, or unusable
+
 Be objective and factual. Do NOT invent damage or flood severity.
 
 Return ONLY a valid JSON object matching this schema:
 {
   "hasVisibleFlooding": boolean,
   "confidenceScore": number, // between 0 and 100
-  "assessment": "Possible Flooding Detected" | "No Clear Flooding Detected" | "Uncertain",
+  "assessment": "Possible Flooding Detected" | "No Clear Flooding Detected" | "Uncertain Image" | "Invalid or Unusable Photograph",
   "observedWaterLevel": "Low" | "Moderate" | "High" | "Severe" | "None",
   "observedAccessibility": "Open" | "Partially Blocked" | "Completely Blocked" | "Uncertain",
-  "detailedExplanation": string, // 2-3 sentences explaining visual cues like reflections, water line against tires, submerged sidewalks
+  "detailedExplanation": string, // 2-3 sentences explaining visual cues like reflections, water line against tires, submerged sidewalks, or why image is unclear
   "uncertaintyNotes": string // notes on camera angle, lighting, resolution, or obstructions
 }`;
 
@@ -309,15 +365,21 @@ Return ONLY a valid JSON object matching this schema:
           parsed = {};
         }
 
-        // Validate JSON fields & confidence bounds
         const rawScore = typeof parsed.confidenceScore === 'number' ? parsed.confidenceScore : 75;
         const confidenceScore = Math.max(0, Math.min(100, Number(rawScore.toFixed(1))));
 
-        let aiAssessment: 'Possible Flooding Detected' | 'No Clear Flooding Detected' | 'Uncertain' = 'Uncertain';
+        let aiAssessment:
+          | 'Possible Flooding Detected'
+          | 'No Clear Flooding Detected'
+          | 'Uncertain Image'
+          | 'Invalid or Unusable Photograph' = 'Uncertain Image';
+
         if (parsed.assessment === 'Possible Flooding Detected' || parsed.hasVisibleFlooding === true) {
           aiAssessment = 'Possible Flooding Detected';
         } else if (parsed.assessment === 'No Clear Flooding Detected' || parsed.hasVisibleFlooding === false) {
           aiAssessment = 'No Clear Flooding Detected';
+        } else if (parsed.assessment === 'Invalid or Unusable Photograph') {
+          aiAssessment = 'Invalid or Unusable Photograph';
         }
 
         // IMPORTANT VERIFICATION RULE:
@@ -326,6 +388,8 @@ Return ONLY a valid JSON object matching this schema:
         return res.json({
           method: 'Gemini 3.8 Flash (Multimodal)',
           modelName: 'gemini-3.8-flash',
+          aiStatus: 'COMPLETED',
+          hasVisibleFlooding: Boolean(parsed.hasVisibleFlooding),
           aiAssessment,
           officialStatus: 'Under Review',
           confidence: confidenceScore,
@@ -342,21 +406,40 @@ Return ONLY a valid JSON object matching this schema:
           disclaimer,
         });
       } catch (err: any) {
-        console.warn('Gemini multimodal verification failed, falling back to simulated analysis:', err?.message);
+        console.error('Gemini multimodal verification error:', err?.message);
+        // Never invent a successful AI result when live Gemini fails!
+        return res.status(502).json({
+          method: 'Gemini 3.8 Flash (Multimodal)',
+          modelName: 'gemini-3.8-flash',
+          aiStatus: 'FAILED',
+          hasVisibleFlooding: false,
+          aiAssessment: 'AI Processing Failed',
+          officialStatus: 'Under Review',
+          confidence: 0,
+          explanation: `Gemini AI processing failed (${err?.message || 'API error'}). Your flood report is saved and queued for manual officer verification. You can retry AI analysis below.`,
+          uncertainty: 'Live AI model failed to return a valid assessment.',
+          waterLevelEstimated: waterLevel,
+          roadAccessibilityEstimated: 'Uncertain',
+          humanVerificationRequired: true,
+          timestamp,
+          disclaimer,
+        });
       }
     }
 
-    // Fallback Demonstration Heuristic (Clearly marked as Simulation Result)
+    // Academic Demonstration Mode (Only used when GEMINI_API_KEY is not configured)
     const isSevere = waterLevel === 'Severe' || waterLevel === 'High';
     const confidence = isSevere ? 88.5 : 78.0;
 
     return res.json({
       method: 'Demonstration Heuristic (Simulation)',
       modelName: 'None (Academic Simulation)',
-      aiAssessment: 'Simulation Result',
+      aiStatus: 'COMPLETED',
+      hasVisibleFlooding: true,
+      aiAssessment: 'Possible Flooding Detected',
       officialStatus: 'Under Review',
       confidence,
-      explanation: `Simulated texture analysis (Academic Prototype): Road surface optical reflectivity consistent with ${waterLevel.toLowerCase()} water accumulation.`,
+      explanation: `Simulated texture analysis (Academic Prototype — GEMINI_API_KEY not set): Road surface optical reflectivity consistent with ${waterLevel.toLowerCase()} water accumulation.`,
       uncertainty:
         'Simulated score for testing and evaluation purposes. Does not represent actual live model inference.',
       waterLevelEstimated: waterLevel,

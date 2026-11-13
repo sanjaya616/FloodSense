@@ -213,7 +213,6 @@ export const PublicMapPage: React.FC = () => {
       {activeReportModal && (
         <IncidentDetailsModal
           report={activeReportModal}
-          isOpen={true}
           onClose={() => setActiveReportModal(null)}
         />
       )}

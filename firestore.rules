@@ -54,7 +54,7 @@ service cloud.firestore {
         && data.roadAccessibility in ['Open', 'Partially Blocked', 'Completely Blocked']
         && data.floodType in ['Street Waterlogging', 'Flash Flood', 'Canal Overflow', 'Drainage Blockage']
         && data.riskLevel in ['HIGH', 'MEDIUM', 'LOW']
-        && data.incidentStatus in ['Submitted', 'Under Review', 'Verified', 'Alert Issued', 'Resolved', 'Rejected']
+        && data.incidentStatus in ['Submitted', 'Under Review', 'More Info Requested', 'Verified', 'Alert Issued', 'Resolved', 'Rejected']
         && data.reporterId is string && data.reporterId.size() <= 128;
     }
 
@@ -63,12 +63,18 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if isOwner(userId) || isOfficer();
       allow list: if isOfficer();
-      allow create, update: if isOwner(userId)
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && incoming().uid == userId
+        // New registrations may ONLY create a citizen profile (never officer/admin)
+        && (!('role' in incoming()) || incoming().role == 'citizen')
+        && (!('isOfficer' in incoming()) || incoming().isOfficer == false);
+      allow update: if isOwner(userId)
         && isValidId(userId)
         && incoming().uid == userId
         // Enforce role immutability from client: users cannot self-assign role or officer privileges
-        && (!('role' in incoming()) || (existing() != null && incoming().role == existing().role))
-        && (!('isOfficer' in incoming()) || (existing() != null && incoming().isOfficer == existing().isOfficer));
+        && (!('role' in incoming()) || incoming().role == existing().role)
+        && (!('isOfficer' in incoming()) || incoming().isOfficer == existing().isOfficer);
       allow delete: if isOwner(userId) || isOfficer();
     }
 
@@ -89,16 +95,18 @@ service cloud.firestore {
         && isValidId(reportId)
         && isValidReport(incoming())
         && incoming().reporterId == request.auth.uid
-        && incoming().incidentStatus == 'Submitted';
+        && incoming().incidentStatus == 'Submitted'
+        && incoming().verificationStatus == 'UNDER REVIEW';
 
       // Updates:
-      // 1. Citizen updating description while still 'Submitted'
+      // 1. Citizen updating description/image while Submitted or More Info Requested (cannot alter AI, verification, risk, officer notes)
       // 2. Authorized officer updating official verification and incident status
       allow update: if isValidId(reportId) && isValidReport(incoming()) && (
-        (isOwner(existing().reporterId) && existing().incidentStatus == 'Submitted'
-          && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'imageUrl'])) ||
+        (isOwner(existing().reporterId)
+          && existing().incidentStatus in ['Submitted', 'More Info Requested']
+          && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'additionalObservations', 'imageUrl'])) ||
         (isOfficer()
-          && incoming().diff(existing()).affectedKeys().hasOnly(['incidentStatus', 'verificationStatus', 'officerNotes', 'statusHistory', 'verificationTimestamp', 'verifiedBy', 'riskLevel', 'aiConfidence', 'aiClassification']))
+          && incoming().diff(existing()).affectedKeys().hasOnly(['incidentStatus', 'verificationStatus', 'officerNotes', 'statusHistory', 'verificationTimestamp', 'verifiedBy', 'riskLevel', 'aiConfidence', 'aiClassification', 'aiStatus', 'aiVerificationDetails']))
       );
 
       // Deletion: Only owner (if not verified yet) or officer
@@ -112,6 +120,31 @@ service cloud.firestore {
         && (!('reporterPhone' in incoming()))
         && (!('reporterEmail' in incoming()));
       allow delete: if isOfficer();
+    }
+
+    // Notifications collection: Scoped per citizen recipient or officers
+    match /notifications/{notificationId} {
+      allow get, list: if isSignedIn() && (resource.data.recipientUid == request.auth.uid || isOfficer());
+      allow create: if isSignedIn() && (isOfficer() || incoming().recipientUid == request.auth.uid);
+      allow update: if isSignedIn() && (resource.data.recipientUid == request.auth.uid || isOfficer())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['unread']);
+      allow delete: if isOfficer();
+    }
+
+    // Status History collection: Audit trail entries linked to reports
+    match /status_history/{historyId} {
+      allow get, list: if isSignedIn() && (resource.data.citizenUid == request.auth.uid || isOfficer());
+      allow create: if isSignedIn() && (
+        (incoming().citizenUid == request.auth.uid && incoming().status == 'Submitted') ||
+        isOfficer()
+      );
+      allow update, delete: if false; // Immutable audit history
+    }
+
+    // System Settings collection: Clustering & risk thresholds (Read public/signed-in, write officer-only)
+    match /system_settings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isOfficer();
     }
 
     // Hotspots collection: Public read for early warning; updates restricted to authorized officers / backend

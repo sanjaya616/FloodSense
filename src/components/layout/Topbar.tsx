@@ -26,9 +26,8 @@ interface TopbarProps {
 
 export const Topbar: React.FC<TopbarProps> = ({ onToggleSidebar }) => {
   const {
-    role,
+    authenticatedRole,
     userProfile,
-    switchPersona,
     notifications,
     markAllNotificationsAsRead,
     markNotificationAsRead,
@@ -125,7 +124,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onToggleSidebar }) => {
       </div>
 
       {/* Middle zone: Live search input */}
-      <div className="hidden md:flex items-center flex-1 max-w-xs relative">
+      <div className="hidden md:flex items-center flex-1 max-w-sm relative">
         <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
         <input
           type="search"
@@ -158,7 +157,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onToggleSidebar }) => {
         </div>
 
         {/* Live Date Time */}
-        <div className="hidden lg:flex items-center gap-1.5 text-xs font-mono text-slate-500 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+        <div className="hidden 2xl:flex items-center gap-1.5 text-xs font-mono text-slate-500 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
           <Clock className="w-3.5 h-3.5 text-slate-400" />
           <span>
             {currentTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })},{' '}
@@ -247,7 +246,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onToggleSidebar }) => {
 
               <div className="p-2.5 bg-slate-50 border-t border-slate-100 text-center">
                 <NavLink
-                  to="/analytics"
+                  to="/officer/analytics"
                   onClick={() => setShowNotifications(false)}
                   className="text-xs font-semibold text-cyan-700 hover:text-cyan-800"
                 >
@@ -258,10 +257,9 @@ export const Topbar: React.FC<TopbarProps> = ({ onToggleSidebar }) => {
           )}
         </div>
 
-        {/* Switch to Citizen Portal Button */}
+        {/* View Citizen Portal Button */}
         <NavLink
           to="/citizen"
-          onClick={() => switchPersona('citizen')}
           className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-xs font-bold border border-cyan-200 transition-colors"
         >
           <span>Citizen Portal</span>
@@ -284,7 +282,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onToggleSidebar }) => {
               {userProfile.name}
             </span>
             <span className="text-[10px] text-slate-400 block leading-tight font-medium">
-              {role === 'officer' ? 'Officer' : 'Citizen'}
+              {authenticatedRole === 'officer' ? 'Officer' : 'Citizen'}
             </span>
           </div>
         </NavLink>

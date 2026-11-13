@@ -27,6 +27,8 @@ interface FloodMapProps {
   hotspots: FloodHotspot[];
   reports: FloodReport[];
   selectedHotspotId?: string | null;
+  focusCoordinates?: [number, number] | null;
+  focusZoom?: number;
   onSelectHotspot?: (hotspot: FloodHotspot) => void;
   onSelectReport?: (report: FloodReport) => void;
   heightClass?: string;
@@ -116,6 +118,8 @@ export const FloodMap: React.FC<FloodMapProps> = ({
   hotspots,
   reports,
   selectedHotspotId,
+  focusCoordinates,
+  focusZoom = 15,
   onSelectHotspot,
   onSelectReport,
   heightClass = 'h-[520px]',
@@ -123,8 +127,8 @@ export const FloodMap: React.FC<FloodMapProps> = ({
   showSectorControls = true,
 }) => {
   const [activeLayer, setActiveLayer] = useState<'all' | 'hotspots' | 'reports'>('all');
-  const [mapCenter, setMapCenter] = useState<[number, number]>([6.9271, 79.8653]); // Colombo center
-  const [zoomLevel, setZoomLevel] = useState(13);
+  const [mapCenter, setMapCenter] = useState<[number, number]>(focusCoordinates || [6.9271, 79.8653]); // Colombo center
+  const [zoomLevel, setZoomLevel] = useState(focusCoordinates ? focusZoom : 13);
   const [showRadiusCircles, setShowRadiusCircles] = useState(true);
 
   // Sector coordinates for rapid tactical focus
@@ -137,6 +141,14 @@ export const FloodMap: React.FC<FloodMapProps> = ({
     { name: 'Borella', center: [6.9110, 79.8770], zoom: 15 },
     { name: 'Nugegoda', center: [6.8710, 79.8980], zoom: 15 },
   ];
+
+  // Recenter when explicit focus coordinates change
+  useEffect(() => {
+    if (focusCoordinates) {
+      setMapCenter(focusCoordinates);
+      setZoomLevel(focusZoom);
+    }
+  }, [focusCoordinates?.[0], focusCoordinates?.[1], focusZoom]);
 
   // Recenter when selected hotspot changes
   useEffect(() => {

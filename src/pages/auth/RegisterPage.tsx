@@ -11,16 +11,16 @@ import {
   Mail,
   Phone,
   Lock,
-  CheckCircle2,
   AlertCircle,
   ArrowRight,
-  ShieldCheck,
   Sparkles,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { useFlood } from '../../context/FloodContext';
 
 export const RegisterPage: React.FC = () => {
-  const { registerWithEmail } = useFlood();
+  const { registerWithEmail, loginWithGoogle } = useFlood();
   const navigate = useNavigate();
 
   const [name, setName] = useState('');
@@ -28,6 +28,8 @@ export const RegisterPage: React.FC = () => {
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [agreeTerms, setAgreeTerms] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -48,12 +50,23 @@ export const RegisterPage: React.FC = () => {
   }, [password]);
 
   const handlePreFillDemo = () => {
-    setName('Nimalka Senanayake');
-    setEmail('nimalka.senanayake@gmail.com');
-    setPhone('+94 77 123 4567');
+    setName('Amali Wickramasinghe');
+    setEmail(`amali.${Math.floor(100 + Math.random() * 899)}@colombo.lk`);
+    setPhone('+94 77 456 7890');
     setPassword('ColomboSafe#2026');
     setConfirmPassword('ColomboSafe#2026');
     setAgreeTerms(true);
+    setErrorMessage(null);
+  };
+
+  const handleGoogleRegister = async () => {
+    setErrorMessage(null);
+    const res = await loginWithGoogle();
+    if (res.success) {
+      navigate(res.role === 'officer' ? '/officer/overview' : '/citizen');
+    } else if (res.message) {
+      setErrorMessage(res.message);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -64,7 +77,7 @@ export const RegisterPage: React.FC = () => {
       setErrorMessage('Please enter your full name.');
       return;
     }
-    if (!email.trim()) {
+    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       setErrorMessage('Please enter a valid email address.');
       return;
     }
@@ -77,7 +90,7 @@ export const RegisterPage: React.FC = () => {
       return;
     }
     if (!agreeTerms) {
-      setErrorMessage('Please confirm agreement to community safety guidelines.');
+      setErrorMessage('Please confirm agreement to the FloodSense Privacy Policy and Community Safety Terms.');
       return;
     }
 
@@ -135,9 +148,9 @@ export const RegisterPage: React.FC = () => {
             <button
               type="button"
               onClick={handlePreFillDemo}
-              className="px-3 py-1 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-[11px] font-bold rounded-lg border border-cyan-500/40 transition-colors"
+              className="px-3 py-1 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-[11px] font-bold rounded-lg border border-cyan-500/40 transition-colors cursor-pointer"
             >
-              Pre-fill Citizen Demo
+              Pre-fill New Citizen
             </button>
           </div>
 
@@ -150,13 +163,16 @@ export const RegisterPage: React.FC = () => {
             )}
 
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1">Full Name</label>
+              <label htmlFor="reg-name" className="block text-xs font-bold text-slate-300 mb-1">
+                Full Name
+              </label>
               <div className="relative">
                 <User className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
+                  id="reg-name"
                   type="text"
                   required
-                  placeholder="e.g. Nimalka Senanayake"
+                  placeholder="e.g. Amali Wickramasinghe"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
@@ -165,13 +181,16 @@ export const RegisterPage: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1">Email Address</label>
+              <label htmlFor="reg-email" className="block text-xs font-bold text-slate-300 mb-1">
+                Email Address
+              </label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
+                  id="reg-email"
                   type="email"
                   required
-                  placeholder="e.g. nimalka.senanayake@gmail.com"
+                  placeholder="e.g. resident@colombo.lk"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
@@ -180,12 +199,13 @@ export const RegisterPage: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1">
+              <label htmlFor="reg-phone" className="block text-xs font-bold text-slate-300 mb-1">
                 Contact Phone (for emergency updates)
               </label>
               <div className="relative">
                 <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
+                  id="reg-phone"
                   type="tel"
                   placeholder="+94 77 123 4567"
                   value={phone}
@@ -197,7 +217,9 @@ export const RegisterPage: React.FC = () => {
 
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-bold text-slate-300">Password</label>
+                <label htmlFor="reg-password" className="block text-xs font-bold text-slate-300">
+                  Password
+                </label>
                 {password && (
                   <span className="text-[10px] font-mono font-bold text-slate-400">
                     Strength: <span className="text-white">{passwordStrength.label}</span>
@@ -207,13 +229,22 @@ export const RegisterPage: React.FC = () => {
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
-                  type="password"
+                  id="reg-password"
+                  type={showPassword ? 'text' : 'password'}
                   required
-                  placeholder="Create a strong password"
+                  placeholder="Create a strong password (min 6 chars)"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
+                  className="w-full pl-9 pr-10 py-2 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
 
               {/* Password strength meter bar */}
@@ -232,23 +263,32 @@ export const RegisterPage: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1">
+              <label htmlFor="reg-confirm" className="block text-xs font-bold text-slate-300 mb-1">
                 Confirm Password
               </label>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
-                  type="password"
+                  id="reg-confirm"
+                  type={showConfirmPassword ? 'text' : 'password'}
                   required
                   placeholder="Confirm your password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
+                  className="w-full pl-9 pr-10 py-2 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
             </div>
 
-            {/* Terms Checkbox */}
+            {/* Privacy Policy & Terms Checkbox */}
             <label className="flex items-start gap-2.5 text-xs text-slate-400 cursor-pointer pt-1">
               <input
                 type="checkbox"
@@ -257,8 +297,11 @@ export const RegisterPage: React.FC = () => {
                 className="mt-0.5 rounded border-slate-700 text-cyan-600 focus:ring-cyan-500 bg-slate-900"
               />
               <span>
-                I agree to submit ground-truth flood observations in good faith and accept the
-                FloodSense Community Safety Terms.
+                I agree to the{' '}
+                <NavLink to="/safety" className="text-cyan-400 hover:underline font-semibold">
+                  FloodSense Privacy Policy
+                </NavLink>{' '}
+                and submit ground-truth flood observations in good faith.
               </span>
             </label>
 
@@ -268,7 +311,7 @@ export const RegisterPage: React.FC = () => {
               className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-extrabold text-xs shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
             >
               {isSubmitting ? (
-                <span>Creating account...</span>
+                <span>Creating Citizen Account...</span>
               ) : (
                 <>
                   <span>Complete Citizen Registration</span>
@@ -277,6 +320,40 @@ export const RegisterPage: React.FC = () => {
               )}
             </button>
           </form>
+
+          <div className="relative flex py-1 items-center">
+            <div className="flex-grow border-t border-slate-800"></div>
+            <span className="flex-shrink mx-4 text-[10px] text-slate-500 uppercase tracking-wider font-mono">
+              or quick sign up
+            </span>
+            <div className="flex-grow border-t border-slate-800"></div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleGoogleRegister}
+            className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center justify-center gap-2.5 transition-colors cursor-pointer"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24">
+              <path
+                fill="#4285F4"
+                d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.65v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.14z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
+              />
+            </svg>
+            <span>Sign up with Google</span>
+          </button>
 
           <div className="text-center text-xs text-slate-400">
             <span>Already have an account? </span>

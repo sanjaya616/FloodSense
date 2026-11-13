@@ -315,7 +315,7 @@ test('simulateAiVerification always leaves official status as Under Review with 
     description: 'Road deeply flooded',
   });
   // AI Assessment can detect possible flooding
-  assert.equal(result.aiAssessment, 'Simulation Result');
+  assert.equal(result.aiAssessment, 'Possible Flooding Detected');
   // Official verification status MUST remain 'Under Review'
   assert.equal(result.officialStatus, 'Under Review');
   assert.equal(result.humanVerificationRequired, true);
@@ -476,3 +476,35 @@ test('Forecast 3h calculation properly sums future hourly precipitation without 
   const expected3h = Number(next3Hours.reduce((a, b) => a + b, 0).toFixed(1));
   assert.equal(expected3h, 28.5);
 });
+
+// 17. More Info Requested & AI Failure Safeguard Tests
+test('More Info Requested status is tracked distinctly and never counted as verified', () => {
+  const reports: FloodReport[] = [
+    {
+      id: 'REP-MORE-1',
+      location: 'Armor Street Junction',
+      area: 'Maradana',
+      lat: 6.9355,
+      lng: 79.8618,
+      timestamp: new Date().toISOString(),
+      waterLevel: 'High',
+      roadAccessibility: 'Partially Blocked',
+      floodType: 'Drainage Blockage',
+      description: 'Needs clearer landmark confirmation',
+      riskLevel: 'MEDIUM',
+      verificationStatus: 'UNDER REVIEW',
+      incidentStatus: 'More Info Requested',
+      aiStatus: 'FAILED',
+      aiClassification: 'AI Processing Failed',
+      aiConfidence: 0,
+      statusHistory: [],
+    },
+  ];
+
+  const analytics = calculateDynamicAnalytics(reports, [], '24h');
+  assert.equal(analytics.totalReports, 1);
+  assert.equal(analytics.statusCounts['More Info Requested'], 1);
+  assert.equal(analytics.verifiedCount, 0);
+  assert.equal(analytics.verifiedPercentage, 0);
+});
+

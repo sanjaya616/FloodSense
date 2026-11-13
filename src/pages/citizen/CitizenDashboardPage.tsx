@@ -17,16 +17,21 @@ import {
   MapPin,
   Camera,
   Activity,
-  PhoneCall,
+  Bell,
+  Flame,
 } from 'lucide-react';
 import { useFlood } from '../../context/FloodContext';
 import { RiskBadge } from '../../components/common/RiskBadge';
+import { FloodMap } from '../../components/map/FloodMap';
 
 export const CitizenDashboardPage: React.FC = () => {
-  const { userProfile, myReports, weather, hotspots } = useFlood();
+  const { userProfile, myReports, weather, hotspots, reports, notifications } = useFlood();
 
   const underReviewCount = myReports.filter(
-    (r) => r.incidentStatus === 'Submitted' || r.incidentStatus === 'Under Review'
+    (r) =>
+      r.incidentStatus === 'Submitted' ||
+      r.incidentStatus === 'Under Review' ||
+      r.incidentStatus === 'More Info Requested'
   ).length;
 
   const verifiedCount = myReports.filter(
@@ -35,8 +40,10 @@ export const CitizenDashboardPage: React.FC = () => {
 
   const resolvedCount = myReports.filter((r) => r.incidentStatus === 'Resolved').length;
 
-  // Recent 3 reports
+  // Recent 3 citizen reports
   const recentReports = myReports.slice(0, 3);
+  const topHotspots = hotspots.slice(0, 3);
+  const topNotifications = notifications.slice(0, 3);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8 font-sans">
@@ -94,7 +101,7 @@ export const CitizenDashboardPage: React.FC = () => {
           <p className="text-2xl sm:text-3xl font-black text-amber-700 font-mono mt-2">
             {underReviewCount}
           </p>
-          <span className="text-[11px] text-slate-400 mt-1 block">AI analysis completed</span>
+          <span className="text-[11px] text-slate-400 mt-1 block">Queued for officer triage</span>
         </div>
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs">
@@ -143,7 +150,7 @@ export const CitizenDashboardPage: React.FC = () => {
             </span>
             <span>•</span>
             <span className="flex items-center gap-1.5">
-              <Activity className="w-4 h-4 text-cyan-600" /> Live AI Verification
+              <Activity className="w-4 h-4 text-cyan-600" /> AI Triage Support
             </span>
           </div>
         </div>
@@ -200,7 +207,7 @@ export const CitizenDashboardPage: React.FC = () => {
                       className="w-14 h-14 rounded-xl object-cover shrink-0 border border-slate-100"
                     />
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
                         <span className="font-mono text-xs font-bold text-slate-700">
                           {report.id}
                         </span>
@@ -211,6 +218,8 @@ export const CitizenDashboardPage: React.FC = () => {
                               ? 'bg-emerald-100 text-emerald-800'
                               : report.incidentStatus === 'Resolved'
                               ? 'bg-blue-100 text-blue-800'
+                              : report.incidentStatus === 'Rejected'
+                              ? 'bg-red-100 text-red-800'
                               : 'bg-amber-100 text-amber-800'
                           }`}
                         >
@@ -221,13 +230,14 @@ export const CitizenDashboardPage: React.FC = () => {
                         {report.location}
                       </h4>
                       <p className="text-[11px] text-slate-500 mt-0.5">
-                        Water Level: <span className="font-semibold text-slate-700">{report.waterLevel}</span> • {new Date(report.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        Water Level: <span className="font-semibold text-slate-700">{report.waterLevel}</span> •{' '}
+                        {new Date(report.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
                     </div>
                   </div>
 
                   <NavLink
-                    to={`/citizen/reports`}
+                    to="/citizen/reports"
                     className="text-xs font-semibold text-cyan-700 hover:text-cyan-800 shrink-0 self-end sm:self-center"
                   >
                     Track Timeline →
@@ -238,55 +248,134 @@ export const CitizenDashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Right: Weather & Colombo Advisory (5 cols) */}
-        <div className="lg:col-span-5 space-y-4">
-          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-            Live Monsoonal Telemetry
-          </h3>
+        {/* Right: Weather & Important Safety Notifications (5 cols) */}
+        <div className="lg:col-span-5 space-y-6">
+          <div className="space-y-3">
+            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
+              Colombo Basin Weather Telemetry
+            </h3>
 
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-4">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CloudRain className="w-5 h-5 text-cyan-600" />
+                  <span className="font-bold text-xs text-slate-900">Colombo Western Basin</span>
+                </div>
+                <span className="text-[11px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-semibold">
+                  {weather.isLive ? 'Open-Meteo Live' : 'Demo Weather'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-center">
+                <div className="p-3 bg-slate-50 rounded-xl">
+                  <span className="text-[11px] text-slate-500">Current Rainfall</span>
+                  <p className="text-xl font-black text-cyan-700 font-mono mt-0.5">
+                    {weather.currentRainfallMm} mm/h
+                  </p>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-xl">
+                  <span className="text-[11px] text-slate-500">Next 3 Hours</span>
+                  <p className="text-xl font-black text-blue-700 font-mono mt-0.5">
+                    {weather.expected3hRainfallMm} mm
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200/80 text-xs text-amber-900 space-y-1">
+                <span className="font-bold flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Active Safety Directive</span>
+                </span>
+                <p className="leading-relaxed text-[11px]">
+                  Heavy localized runoff expected in Kolonnawa and Maradana canal corridors. Avoid
+                  parking in basement garages or low-lying underpasses.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Important Safety Notifications */}
+          <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <CloudRain className="w-5 h-5 text-cyan-600" />
-                <span className="font-bold text-xs text-slate-900">Colombo Western Basin</span>
-              </div>
-              <span className="text-[11px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-semibold">
-                Open-Meteo Radar
-              </span>
+              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                <Bell className="w-4 h-4 text-cyan-600" />
+                <span>Important Safety Notifications</span>
+              </h3>
+              <NavLink to="/citizen/notifications" className="text-xs font-bold text-cyan-700 hover:underline">
+                View All →
+              </NavLink>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 text-center">
-              <div className="p-3 bg-slate-50 rounded-xl">
-                <span className="text-[11px] text-slate-500">Current Rainfall</span>
-                <p className="text-xl font-black text-cyan-700 font-mono mt-0.5">
-                  {weather.currentRainfallMm} mm/h
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs divide-y divide-slate-100">
+              {topNotifications.map((item) => (
+                <div key={item.id} className="p-3.5 text-xs space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-slate-900 truncate">{item.title}</span>
+                    <span className="text-[10px] font-mono text-slate-400 shrink-0">{item.time}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 line-clamp-2">{item.description}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Nearby Public Flood Hotspots & Community Map Preview */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Nearby Public Hotspots */}
+        <div className="lg:col-span-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+              <Flame className="w-4 h-4 text-red-500" />
+              <span>Nearby Public Flood Hotspots</span>
+            </h3>
+            <NavLink to="/map-public" className="text-xs font-bold text-cyan-700 hover:underline">
+              Explore Map →
+            </NavLink>
+          </div>
+
+          <div className="space-y-3">
+            {topHotspots.map((hotspot) => (
+              <div
+                key={hotspot.id}
+                className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-1.5"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs font-bold text-slate-500">{hotspot.id}</span>
+                  <RiskBadge level={hotspot.riskLevel} />
+                </div>
+                <h4 className="font-bold text-slate-900 text-sm">{hotspot.location}</h4>
+                <p className="text-xs text-slate-500">
+                  {hotspot.area} Ward • {hotspot.reportCount} clustered reports • {hotspot.forecastRainfallMm}mm rain
+                </p>
+                <p className="text-[11px] text-slate-600 bg-slate-50 p-2 rounded-xl border border-slate-100">
+                  {hotspot.precaution}
                 </p>
               </div>
-              <div className="p-3 bg-slate-50 rounded-xl">
-                <span className="text-[11px] text-slate-500">Next 3 Hours</span>
-                <p className="text-xl font-black text-blue-700 font-mono mt-0.5">
-                  {weather.expected3hRainfallMm} mm
-                </p>
-              </div>
-            </div>
+            ))}
+          </div>
+        </div>
 
-            <div className="p-3 bg-amber-50 rounded-xl border border-amber-200/80 text-xs text-amber-900 space-y-1">
-              <span className="font-bold flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                <span>Active Safety Directive</span>
-              </span>
-              <p className="leading-relaxed text-[11px]">
-                Heavy localized runoff expected in Kolonnawa and Maradana canal corridors. Avoid
-                parking in basement garages or parking slots adjacent to canal flap gates.
-              </p>
-            </div>
+        {/* Community Flood Map Preview */}
+        <div className="lg:col-span-7 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
+              Community Flood Map Preview (Zero Private PII)
+            </h3>
+            <NavLink to="/map-public" className="text-xs font-bold text-cyan-700 hover:underline">
+              Open Full Interactive Map →
+            </NavLink>
+          </div>
 
-            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
-              <span className="text-slate-500">Need immediate rescue?</span>
-              <a href="tel:117" className="font-bold text-red-600 hover:underline">
-                DMC Hotline: 117
-              </a>
-            </div>
+          <div className="bg-white p-2 rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+            <FloodMap
+              hotspots={hotspots}
+              reports={reports}
+              heightClass="h-[340px]"
+              showLegendOverlay={true}
+              showSectorControls={false}
+            />
           </div>
         </div>
       </div>

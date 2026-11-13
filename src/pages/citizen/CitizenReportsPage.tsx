@@ -9,28 +9,25 @@ import {
   FileText,
   PlusCircle,
   Search,
-  Filter,
   CheckCircle2,
-  Clock,
-  ShieldAlert,
   AlertTriangle,
   ChevronRight,
   Eye,
-  Camera,
-  MapPin,
-  Sparkles,
-  ArrowRight,
   X,
+  RefreshCw,
+  Ban,
+  MessageSquare,
 } from 'lucide-react';
 import { useFlood } from '../../context/FloodContext';
 import { RiskBadge } from '../../components/common/RiskBadge';
 import { FloodReport } from '../../utils/floodLogic';
 
 export const CitizenReportsPage: React.FC = () => {
-  const { myReports } = useFlood();
+  const { myReports, retryAiVerification } = useFlood();
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedReport, setSelectedReport] = useState<FloodReport | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   const filteredReports = myReports.filter((r) => {
     const matchSearch =
@@ -46,6 +43,7 @@ export const CitizenReportsPage: React.FC = () => {
       return (
         r.incidentStatus === 'Submitted' ||
         r.incidentStatus === 'Under Review' ||
+        r.incidentStatus === 'More Info Requested' ||
         r.incidentStatus === 'Verified' ||
         r.incidentStatus === 'Alert Issued'
       );
@@ -59,19 +57,21 @@ export const CitizenReportsPage: React.FC = () => {
     return true;
   });
 
-  // Calculate 5-stage timeline progress for a given incident status
-  const getTimelineStep = (status: string) => {
-    switch (status) {
+  // 6-stage timeline progress:
+  // 1: Submitted -> 2: AI Reviewed -> 3: Under Officer Review -> 4: Verified -> 5: Alert Issued -> 6: Resolved
+  const getTimelineStep = (report: FloodReport) => {
+    switch (report.incidentStatus) {
       case 'Submitted':
-        return 1;
+        return report.aiStatus === 'COMPLETED' ? 2 : 1;
       case 'Under Review':
-        return 2;
-      case 'Verified':
+      case 'More Info Requested':
         return 3;
-      case 'Alert Issued':
+      case 'Verified':
         return 4;
-      case 'Resolved':
+      case 'Alert Issued':
         return 5;
+      case 'Resolved':
+        return 6;
       case 'Rejected':
         return 0;
       default:
@@ -81,11 +81,24 @@ export const CitizenReportsPage: React.FC = () => {
 
   const timelineStages = [
     { num: 1, label: 'Submitted' },
-    { num: 2, label: 'AI Analyzed' },
+    { num: 2, label: 'AI Reviewed' },
     { num: 3, label: 'Officer Review' },
-    { num: 4, label: 'Verified & Alert' },
-    { num: 5, label: 'Resolved' },
+    { num: 4, label: 'Verified' },
+    { num: 5, label: 'Alert Issued' },
+    { num: 6, label: 'Resolved' },
   ];
+
+  const handleRetryAi = async (reportId: string) => {
+    setRetryingId(reportId);
+    try {
+      const updated = await retryAiVerification(reportId);
+      if (updated && selectedReport?.id === reportId) {
+        setSelectedReport(updated);
+      }
+    } finally {
+      setRetryingId(null);
+    }
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6 font-sans">
@@ -172,7 +185,8 @@ export const CitizenReportsPage: React.FC = () => {
           </div>
         ) : (
           filteredReports.map((report) => {
-            const stepNum = getTimelineStep(report.incidentStatus);
+            const stepNum = getTimelineStep(report);
+            const aiFailed = report.aiStatus === 'FAILED' || report.aiClassification === 'AI Processing Failed';
 
             return (
               <div
@@ -188,7 +202,7 @@ export const CitizenReportsPage: React.FC = () => {
                       className="w-14 h-14 rounded-2xl object-cover shrink-0 border border-slate-100 shadow-2xs"
                     />
                     <div>
-                      <div className="flex items-center gap-2 mb-0.5">
+                      <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                         <span className="font-mono text-xs font-black text-slate-800">
                           {report.id}
                         </span>
@@ -201,11 +215,18 @@ export const CitizenReportsPage: React.FC = () => {
                               ? 'bg-blue-100 text-blue-800'
                               : report.incidentStatus === 'Rejected'
                               ? 'bg-red-100 text-red-800'
+                              : report.incidentStatus === 'More Info Requested'
+                              ? 'bg-purple-100 text-purple-800'
                               : 'bg-amber-100 text-amber-800'
                           }`}
                         >
                           {report.incidentStatus}
                         </span>
+                        {report.isDuplicate && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
+                            Duplicate of {report.duplicateOfReportId}
+                          </span>
+                        )}
                       </div>
                       <h3 className="text-sm sm:text-base font-bold text-slate-900">
                         {report.location}
@@ -227,61 +248,107 @@ export const CitizenReportsPage: React.FC = () => {
                   </button>
                 </div>
 
-                {/* 5-Stage Timeline Stepper */}
-                <div className="pt-3 border-t border-slate-100">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-2">
-                    Operational Status Progress:
-                  </span>
-                  <div className="flex items-center justify-between">
-                    {timelineStages.map((stage, idx) => {
-                      const isPassed = stepNum >= stage.num;
-                      const isCurrent = stepNum === stage.num;
-                      return (
-                        <React.Fragment key={stage.num}>
-                          <div className="flex flex-col items-center gap-1 flex-1">
-                            <div
-                              className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all ${
-                                isPassed
-                                  ? 'bg-emerald-500 text-white shadow-2xs'
-                                  : 'bg-slate-100 text-slate-400'
-                              }`}
-                            >
-                              {isPassed ? <CheckCircle2 className="w-3.5 h-3.5" /> : stage.num}
-                            </div>
-                            <span
-                              className={`text-[9px] font-bold text-center leading-tight ${
-                                isCurrent
-                                  ? 'text-cyan-700 font-extrabold'
-                                  : isPassed
-                                  ? 'text-slate-700'
-                                  : 'text-slate-400'
-                              }`}
-                            >
-                              {stage.label}
-                            </span>
-                          </div>
-                          {idx < timelineStages.length - 1 && (
-                            <div
-                              className={`h-0.5 flex-1 mb-4 transition-colors ${
-                                stepNum > stage.num ? 'bg-emerald-500' : 'bg-slate-200'
-                              }`}
-                            />
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
+                {/* Branch Explanations for Rejected / More Info Requested / Duplicate */}
+                {report.incidentStatus === 'Rejected' && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 flex items-start gap-2">
+                    <Ban className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block">Report Rejected by Emergency Officer</span>
+                      <span>
+                        {report.officerNotes?.[report.officerNotes.length - 1] ||
+                          'Officer determined this submission did not require emergency dispatch.'}
+                      </span>
+                    </div>
                   </div>
-                </div>
+                )}
+
+                {report.incidentStatus === 'More Info Requested' && (
+                  <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl text-xs text-purple-900 flex items-start gap-2">
+                    <MessageSquare className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block">Officer Requested Additional Information</span>
+                      <span>
+                        {report.officerNotes?.[report.officerNotes.length - 1] ||
+                          'Please verify street landmark or attach a clearer daytime photograph.'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* 6-Stage Timeline Stepper */}
+                {report.incidentStatus !== 'Rejected' && (
+                  <div className="pt-3 border-t border-slate-100">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-2">
+                      6-Stage Operational Lifecycle Progress:
+                    </span>
+                    <div className="flex items-center justify-between">
+                      {timelineStages.map((stage, idx) => {
+                        const isPassed = stepNum >= stage.num;
+                        const isCurrent = stepNum === stage.num;
+                        return (
+                          <React.Fragment key={stage.num}>
+                            <div className="flex flex-col items-center gap-1 flex-1">
+                              <div
+                                className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all ${
+                                  isPassed
+                                    ? 'bg-emerald-500 text-white shadow-2xs'
+                                    : 'bg-slate-100 text-slate-400'
+                                }`}
+                              >
+                                {isPassed ? <CheckCircle2 className="w-3.5 h-3.5" /> : stage.num}
+                              </div>
+                              <span
+                                className={`text-[9px] font-bold text-center leading-tight ${
+                                  isCurrent
+                                    ? 'text-cyan-700 font-extrabold'
+                                    : isPassed
+                                    ? 'text-slate-700'
+                                    : 'text-slate-400'
+                                }`}
+                              >
+                                {stage.label}
+                              </span>
+                            </div>
+                            {idx < timelineStages.length - 1 && (
+                              <div
+                                className={`h-0.5 flex-1 mb-4 transition-colors ${
+                                  stepNum > stage.num ? 'bg-emerald-500' : 'bg-slate-200'
+                                }`}
+                              />
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* AI & Officer Highlights */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-1">
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                      AI Vision Analysis ({report.aiConfidence}% confidence)
-                    </span>
-                    <p className="font-semibold text-slate-800 text-xs mt-0.5">
-                      {report.aiClassification}
-                    </p>
+                  <div
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                      aiFailed ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-100'
+                    }`}
+                  >
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                        AI Vision Analysis ({report.aiConfidence ?? 0}% confidence)
+                      </span>
+                      <p className={`font-semibold text-xs mt-0.5 ${aiFailed ? 'text-red-800' : 'text-slate-800'}`}>
+                        {report.aiClassification}
+                      </p>
+                    </div>
+                    {aiFailed && (
+                      <button
+                        type="button"
+                        disabled={retryingId === report.id}
+                        onClick={() => handleRetryAi(report.id)}
+                        className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${retryingId === report.id ? 'animate-spin' : ''}`} />
+                        <span>{retryingId === report.id ? 'Retrying...' : 'Retry AI'}</span>
+                      </button>
+                    )}
                   </div>
 
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
@@ -351,13 +418,24 @@ export const CitizenReportsPage: React.FC = () => {
             <div className="p-4 bg-slate-900 text-white rounded-2xl border border-slate-800 space-y-2 text-xs">
               <div className="flex items-center justify-between">
                 <span className="font-bold text-cyan-300">Multimodal AI Assessment</span>
-                <span className="font-mono text-cyan-400 font-bold">{selectedReport.aiConfidence}%</span>
+                <span className="font-mono text-cyan-400 font-bold">{selectedReport.aiConfidence ?? 0}%</span>
               </div>
               <p className="text-slate-300 font-medium">{selectedReport.aiClassification}</p>
               {selectedReport.aiVerificationDetails?.explanation && (
                 <p className="text-[11px] text-slate-400 italic">
                   "{selectedReport.aiVerificationDetails.explanation}"
                 </p>
+              )}
+              {selectedReport.aiStatus === 'FAILED' && (
+                <button
+                  type="button"
+                  disabled={retryingId === selectedReport.id}
+                  onClick={() => handleRetryAi(selectedReport.id)}
+                  className="mt-2 px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${retryingId === selectedReport.id ? 'animate-spin' : ''}`} />
+                  <span>Retry AI Verification</span>
+                </button>
               )}
             </div>
 

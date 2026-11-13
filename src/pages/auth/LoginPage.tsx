@@ -15,18 +15,27 @@ import {
   AlertCircle,
   CheckCircle2,
   Sparkles,
-  Layers,
+  Eye,
+  EyeOff,
+  KeyRound,
 } from 'lucide-react';
-import { useFlood, DEMO_OFFICER_PROFILE, DEMO_CITIZEN_PROFILE } from '../../context/FloodContext';
+import { useFlood, DEMO_CREDENTIALS } from '../../context/FloodContext';
 
 export const LoginPage: React.FC = () => {
-  const { loginWithEmail, loginWithGoogle, switchPersona, dbOperationStatus } = useFlood();
+  const { loginWithEmail, loginWithGoogle, requestPasswordReset, switchPersona } = useFlood();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+
+  // Forgot password inline panel
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetFeedback, setResetFeedback] = useState<{ success: boolean; message: string } | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,7 +47,7 @@ export const LoginPage: React.FC = () => {
     setIsSubmitting(true);
 
     try {
-      const result = await loginWithEmail(email, password);
+      const result = await loginWithEmail(email, password, rememberMe);
       if (result.success) {
         if (result.role === 'officer') {
           navigate('/officer/overview');
@@ -55,6 +64,12 @@ export const LoginPage: React.FC = () => {
     }
   };
 
+  const handleForgotPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = await requestPasswordReset(resetEmail || email);
+    setResetFeedback(res);
+  };
+
   const handleQuickDemoCitizen = () => {
     switchPersona('citizen');
     navigate('/citizen');
@@ -63,6 +78,16 @@ export const LoginPage: React.FC = () => {
   const handleQuickDemoOfficer = () => {
     switchPersona('officer');
     navigate('/officer/overview');
+  };
+
+  const handleGoogleSignIn = async () => {
+    setLocalError(null);
+    const res = await loginWithGoogle();
+    if (res.success) {
+      navigate(res.role === 'officer' ? '/officer/overview' : '/citizen');
+    } else if (res.message) {
+      setLocalError(res.message);
+    }
   };
 
   return (
@@ -102,14 +127,14 @@ export const LoginPage: React.FC = () => {
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>Instant Demo Access</span>
               </span>
-              <span className="text-[10px] text-slate-400 font-mono">1-Click Login</span>
+              <span className="text-[10px] text-slate-400 font-mono">1-Click Evaluation</span>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={handleQuickDemoCitizen}
-                className="p-2.5 bg-slate-800 hover:bg-slate-700/80 border border-slate-700 rounded-xl text-left transition-all group"
+                className="p-2.5 bg-slate-800 hover:bg-slate-700/80 border border-slate-700 rounded-xl text-left transition-all group cursor-pointer"
               >
                 <div className="flex items-center gap-2 mb-1">
                   <User className="w-4 h-4 text-cyan-400" />
@@ -117,13 +142,15 @@ export const LoginPage: React.FC = () => {
                     Citizen Reporter
                   </span>
                 </div>
-                <p className="text-[10px] text-slate-400 line-clamp-1">Nimalka Senanayake</p>
+                <p className="text-[10px] text-slate-400 line-clamp-1 font-mono">
+                  {DEMO_CREDENTIALS.citizen.email}
+                </p>
               </button>
 
               <button
                 type="button"
                 onClick={handleQuickDemoOfficer}
-                className="p-2.5 bg-slate-800 hover:bg-slate-700/80 border border-slate-700 rounded-xl text-left transition-all group"
+                className="p-2.5 bg-slate-800 hover:bg-slate-700/80 border border-slate-700 rounded-xl text-left transition-all group cursor-pointer"
               >
                 <div className="flex items-center gap-2 mb-1">
                   <ShieldAlert className="w-4 h-4 text-amber-400" />
@@ -131,8 +158,15 @@ export const LoginPage: React.FC = () => {
                     Emergency Officer
                   </span>
                 </div>
-                <p className="text-[10px] text-slate-400 line-clamp-1">Kasun Pereira (DMC)</p>
+                <p className="text-[10px] text-slate-400 line-clamp-1 font-mono">
+                  {DEMO_CREDENTIALS.officer.email}
+                </p>
               </button>
+            </div>
+
+            <div className="pt-1 border-t border-slate-800 text-[10px] text-slate-400 font-mono space-y-0.5">
+              <div>Citizen: {DEMO_CREDENTIALS.citizen.email} / {DEMO_CREDENTIALS.citizen.password}</div>
+              <div>Officer: {DEMO_CREDENTIALS.officer.email} / {DEMO_CREDENTIALS.officer.password}</div>
             </div>
           </div>
 
@@ -154,13 +188,16 @@ export const LoginPage: React.FC = () => {
             )}
 
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1">Email Address</label>
+              <label htmlFor="login-email" className="block text-xs font-bold text-slate-300 mb-1">
+                Email Address
+              </label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
+                  id="login-email"
                   type="email"
                   required
-                  placeholder="e.g. nimalka@gmail.com or officer@dmc.gov.lk"
+                  placeholder="e.g. nimalka.senanayake@gmail.com or officer@dmc.gov.lk"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-9 pr-3 py-2.5 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
@@ -170,21 +207,53 @@ export const LoginPage: React.FC = () => {
 
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-bold text-slate-300">Password</label>
-                <span className="text-[11px] text-slate-400">Demo: Any password accepted</span>
+                <label htmlFor="login-password" className="block text-xs font-bold text-slate-300">
+                  Password
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowForgotPassword(!showForgotPassword);
+                    setResetFeedback(null);
+                    setResetEmail(email);
+                  }}
+                  className="text-[11px] text-cyan-400 hover:underline font-semibold cursor-pointer"
+                >
+                  Forgot password?
+                </button>
               </div>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
-                  type="password"
+                  id="login-password"
+                  type={showPassword ? 'text' : 'password'}
                   required
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2.5 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
+                  className="w-full pl-9 pr-10 py-2.5 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
             </div>
+
+            {/* Remember me */}
+            <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-900 text-cyan-500 focus:ring-cyan-500"
+              />
+              <span>Remember me on this device</span>
+            </label>
 
             <button
               type="submit"
@@ -202,13 +271,58 @@ export const LoginPage: React.FC = () => {
             </button>
           </form>
 
+          {/* Forgot Password Inline Panel */}
+          {showForgotPassword && (
+            <form
+              onSubmit={handleForgotPasswordSubmit}
+              className="p-4 bg-slate-900 border border-slate-700 rounded-2xl space-y-3"
+            >
+              <div className="flex items-center gap-2 text-xs font-bold text-cyan-300">
+                <KeyRound className="w-4 h-4" />
+                <span>Password Recovery</span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Enter your account email to receive password reset instructions.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  required
+                  value={resetEmail}
+                  onChange={(e) => setResetEmail(e.target.value)}
+                  placeholder="Enter your email address"
+                  className="flex-1 px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-xl text-white focus:outline-none focus:border-cyan-500"
+                />
+                <button
+                  type="submit"
+                  className="px-3.5 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  Send Link
+                </button>
+              </div>
+              {resetFeedback && (
+                <div
+                  className={`p-2.5 rounded-xl text-[11px] flex items-start gap-2 ${
+                    resetFeedback.success
+                      ? 'bg-emerald-950/60 border border-emerald-800 text-emerald-200'
+                      : 'bg-red-950/60 border border-red-800 text-red-200'
+                  }`}
+                >
+                  {resetFeedback.success ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                  )}
+                  <span>{resetFeedback.message}</span>
+                </div>
+              )}
+            </form>
+          )}
+
           {/* Google Firebase Sign In */}
           <button
             type="button"
-            onClick={async () => {
-              await loginWithGoogle();
-              navigate('/citizen');
-            }}
+            onClick={handleGoogleSignIn}
             className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center justify-center gap-2.5 transition-colors cursor-pointer"
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24">

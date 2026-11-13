@@ -33,6 +33,7 @@ import { db, auth, isFirebaseConfigured, googleProvider, uploadPhotographToStora
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   setDoc,
   updateDoc,
@@ -42,7 +43,7 @@ import {
   Unsubscribe,
   serverTimestamp,
 } from 'firebase/firestore';
-import { signInWithPopup, signOut as fbSignOut } from 'firebase/auth';
+import { signInWithPopup, signOut as fbSignOut, sendPasswordResetEmail } from 'firebase/auth';
 
 export type DataSourceMode = 'DEMO' | 'FIREBASE';
 
@@ -147,6 +148,7 @@ class FloodService {
     description: string;
     waterLevel: string;
     floodType: string;
+    simulateFailure?: boolean;
   }): Promise<AiVerificationDetails> {
     try {
       const res = await fetch('/api/ai/verify', {
@@ -155,20 +157,38 @@ class FloodService {
         body: JSON.stringify(params),
       });
 
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (res.ok && data) {
         return data as AiVerificationDetails;
       }
-    } catch (err) {
-      console.warn('Server AI verification endpoint failed, using client fallback heuristic:', err);
-    }
 
-    return simulateAiVerification({
-      waterLevel: params.waterLevel,
-      floodType: params.floodType,
-      hasImage: !!params.imageBase64,
-      description: params.description,
-    });
+      // If server responded with error (e.g. 502/503 Gemini failure), return honest FAILED state
+      if (data && data.aiAssessment) {
+        return data as AiVerificationDetails;
+      }
+
+      throw new Error(`AI service returned HTTP ${res.status}`);
+    } catch (err: any) {
+      console.warn('Server AI verification failed:', err?.message);
+      // Never invent a successful AI result when AI service fails!
+      return {
+        method: 'Gemini 3.8 Flash (Multimodal)',
+        modelName: 'gemini-3.8-flash',
+        aiStatus: 'FAILED',
+        hasVisibleFlooding: false,
+        aiAssessment: 'AI Processing Failed',
+        officialStatus: 'Under Review',
+        confidence: 0,
+        explanation: `AI vision verification failed (${err?.message || 'Service unavailable'}). Your report has been saved and queued for officer review.`,
+        uncertainty: 'AI assessment could not be completed. Retry available.',
+        waterLevelEstimated: params.waterLevel,
+        roadAccessibilityEstimated: 'Uncertain',
+        humanVerificationRequired: true,
+        timestamp: new Date().toISOString(),
+        disclaimer:
+          'AI image assessment is an assistive early warning signal only. Official verification requires authorized emergency officer confirmation.',
+      };
+    }
   }
 
   // --- Reports ---
@@ -203,6 +223,8 @@ class FloodService {
       imageFile?: File;
       customImage?: string;
       imageMimeType?: string;
+      onUploadProgress?: (percent: number) => void;
+      simulateAiFailure?: boolean;
     }
   ): Promise<{
     report: FloodReport;
@@ -238,27 +260,34 @@ class FloodService {
     if (reportInput.imageFile && this.mode === 'FIREBASE') {
       storedImageUrl = await uploadPhotographToStorage(
         reportInput.imageFile,
-        reportInput.reporterId || 'citizen_anon'
+        reportInput.reporterId || 'citizen_anon',
+        reportInput.onUploadProgress
       );
     } else if (reportInput.customImage) {
+      if (reportInput.onUploadProgress) {
+        reportInput.onUploadProgress(100);
+      }
       storedImageUrl = reportInput.customImage;
+    } else if (reportInput.onUploadProgress) {
+      reportInput.onUploadProgress(100);
     }
 
-    // AI Verification: send Base64 representation to server
+    // AI Verification: send Base64/local path representation to server
     let aiResult: AiVerificationDetails;
-    if (reportInput.customImage) {
+    if (reportInput.customImage || storedImageUrl) {
       aiResult = await this.verifyImageWithAi({
-        imageBase64: reportInput.customImage,
+        imageBase64: reportInput.customImage || storedImageUrl,
         mimeType: reportInput.imageMimeType || 'image/jpeg',
         description: reportInput.description,
         waterLevel: reportInput.waterLevel,
         floodType: reportInput.floodType,
+        simulateFailure: reportInput.simulateAiFailure,
       });
     } else {
       aiResult = simulateAiVerification({
         waterLevel: reportInput.waterLevel,
         floodType: reportInput.floodType,
-        hasImage: !!storedImageUrl,
+        hasImage: false,
         description: reportInput.description,
       });
     }
@@ -276,7 +305,7 @@ class FloodService {
       },
     ];
 
-    if (aiResult.confidence > 0) {
+    if (aiResult.aiStatus === 'COMPLETED') {
       initialStatusHistory.push({
         status: 'Under Review',
         timestamp: new Date(Date.now() + 500).toISOString(),
@@ -285,17 +314,28 @@ class FloodService {
       });
     }
 
-    // Form preliminary report object
+    // Strip non-serializable callbacks/files before constructing report
+    const {
+      imageFile: _imgFile,
+      customImage: _customImg,
+      imageMimeType: _mime,
+      onUploadProgress: _onProg,
+      simulateAiFailure: _simFail,
+      ...cleanReportFields
+    } = reportInput;
+
+    // Form preliminary report object (AI NEVER auto-verifies!)
     const createdReport: FloodReport = {
-      ...reportInput,
+      ...cleanReportFields,
       id: newId,
       timestamp,
       riskLevel: calculatedRisk,
-      verificationStatus: 'UNDER REVIEW', // AI NEVER auto-verifies; requires human officer confirmation
-      incidentStatus: 'Submitted',
+      verificationStatus: 'UNDER REVIEW',
+      incidentStatus: aiResult.aiStatus === 'COMPLETED' ? 'Under Review' : 'Submitted',
       statusHistory: initialStatusHistory,
       aiConfidence: aiResult.confidence,
       aiClassification: aiResult.aiAssessment,
+      aiStatus: aiResult.aiStatus || 'COMPLETED',
       aiVerificationDetails: aiResult,
       imageUrl: storedImageUrl,
       isDuplicate,
@@ -373,6 +413,29 @@ class FloodService {
 
         await setDoc(doc(db, 'reports', newId), firestoreReportPayload);
 
+        // Write status_history entries
+        for (let idx = 0; idx < createdReport.statusHistory.length; idx++) {
+          const entry = createdReport.statusHistory[idx];
+          await setDoc(doc(db, 'status_history', `${newId}_h_${idx}`), {
+            reportId: newId,
+            ...entry,
+          });
+        }
+
+        // Write notification record for citizen & triage center
+        await setDoc(doc(db, 'notifications', `notif_${newId}`), {
+          reportId: newId,
+          recipientId: createdReport.reporterId || 'citizen_anon',
+          title: `Report ${newId} Submitted`,
+          message:
+            aiResult.aiStatus === 'FAILED'
+              ? `Report saved at ${createdReport.location}. AI verification failed; queued for officer review.`
+              : `Report submitted at ${createdReport.location}. AI assessment: ${aiResult.aiAssessment}.`,
+          status: createdReport.incidentStatus,
+          createdAt: serverTimestamp(),
+          unread: true,
+        });
+
         // Also write public sanitized report (Zero PII)
         const publicReportPayload = {
           id: createdReport.id,
@@ -416,6 +479,76 @@ class FloodService {
     };
   }
 
+  // --- Retry AI Verification for Failed/Pending Reports ---
+  public async retryAiVerification(
+    reportId: string,
+    override?: { customImage?: string; mimeType?: string; simulateFailure?: boolean }
+  ): Promise<FloodReport | null> {
+    let target = this.inMemoryReports.find((r) => r.id === reportId) || null;
+    if (!target && this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
+      const snap = await getDoc(doc(db, 'reports', reportId));
+      if (snap.exists()) {
+        target = snap.data() as FloodReport;
+      }
+    }
+    if (!target) return null;
+
+    const aiResult = await this.verifyImageWithAi({
+      imageBase64: override?.customImage || target.imageUrl,
+      mimeType: override?.mimeType || 'image/jpeg',
+      description: target.description,
+      waterLevel: target.waterLevel,
+      floodType: target.floodType,
+      simulateFailure: override?.simulateFailure,
+    });
+
+    const timestamp = new Date().toISOString();
+    const shouldMoveToUnderReview =
+      aiResult.aiStatus === 'COMPLETED' && target.incidentStatus === 'Submitted';
+
+    const nextStatus: IncidentStatus = shouldMoveToUnderReview
+      ? 'Under Review'
+      : target.incidentStatus;
+
+    const historyEntry: StatusHistoryEntry = {
+      status: nextStatus,
+      timestamp,
+      authorName: aiResult.method,
+      note:
+        aiResult.aiStatus === 'COMPLETED'
+          ? `Retry AI Assessment completed: "${aiResult.aiAssessment}" (${aiResult.confidence}% confidence). Human officer review required.`
+          : `Retry AI Assessment failed: ${aiResult.explanation}`,
+    };
+
+    const updatedReport: FloodReport = {
+      ...target,
+      incidentStatus: nextStatus,
+      aiConfidence: aiResult.confidence,
+      aiClassification: aiResult.aiAssessment,
+      aiStatus: aiResult.aiStatus || 'COMPLETED',
+      aiVerificationDetails: aiResult,
+      statusHistory: [...(target.statusHistory || []), historyEntry],
+    };
+
+    const idx = this.inMemoryReports.findIndex((r) => r.id === reportId);
+    if (idx !== -1) {
+      this.inMemoryReports[idx] = updatedReport;
+    }
+
+    if (this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
+      await updateDoc(doc(db, 'reports', reportId), {
+        incidentStatus: updatedReport.incidentStatus,
+        aiConfidence: updatedReport.aiConfidence,
+        aiClassification: updatedReport.aiClassification,
+        aiStatus: updatedReport.aiStatus,
+        aiVerificationDetails: updatedReport.aiVerificationDetails,
+        statusHistory: updatedReport.statusHistory,
+      });
+    }
+
+    return updatedReport;
+  }
+
   // --- Incident Lifecycle Status Updates ---
   public async updateIncidentStatus(
     reportId: string,
@@ -427,7 +560,14 @@ class FloodService {
     const existingIndex = this.inMemoryReports.findIndex((r) => r.id === reportId);
     if (existingIndex === -1 && this.mode === 'DEMO') return null;
 
-    const existing = existingIndex !== -1 ? this.inMemoryReports[existingIndex] : null;
+    let existing = existingIndex !== -1 ? this.inMemoryReports[existingIndex] : null;
+    if (!existing && this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
+      const snap = await getDoc(doc(db, 'reports', reportId));
+      if (snap.exists()) {
+        existing = snap.data() as FloodReport;
+      }
+    }
+
     const newEntry: StatusHistoryEntry = {
       status: newStatus,
       timestamp,
@@ -460,6 +600,21 @@ class FloodService {
           officerNotes: updatedReport.officerNotes || [],
           verificationTimestamp: updatedReport.verificationTimestamp || null,
           verifiedBy: updatedReport.verifiedBy || null,
+        });
+
+        await setDoc(doc(db, 'status_history', `${reportId}_h_${Date.now()}`), {
+          reportId,
+          ...newEntry,
+        });
+
+        await setDoc(doc(db, 'notifications', `notif_${reportId}_${Date.now()}`), {
+          reportId,
+          recipientId: updatedReport.reporterId || 'citizen_anon',
+          title: `Incident ${reportId} Updated: ${newStatus}`,
+          message: officerNote || `Status updated to ${newStatus} by ${authorName}.`,
+          status: newStatus,
+          createdAt: serverTimestamp(),
+          unread: true,
         });
 
         // Also update public sanitized collection
@@ -554,14 +709,90 @@ class FloodService {
     }
   }
 
-  // --- Auth Integration ---
-  public async loginWithGoogle(): Promise<{ uid: string; email: string; displayName: string } | null> {
+  // --- Auth & Authoritative Role Integration ---
+  public async createCitizenUserProfileInFirestore(
+    uid: string,
+    name: string,
+    email: string,
+    phone?: string
+  ): Promise<void> {
+    if (!isFirebaseConfigured() || !db) return;
+    // Public registration MUST always assign lowest-privilege citizen role
+    await setDoc(doc(db, 'users', uid), {
+      uid,
+      name,
+      email,
+      phone: phone || '',
+      role: 'citizen',
+      isOfficer: false,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  public async getAuthoritativeFirebaseRole(user: any): Promise<'officer' | 'citizen'> {
+    if (!user) return 'citizen';
+    try {
+      // 1. Check Firebase Auth custom token claims
+      if (typeof user.getIdTokenResult === 'function') {
+        const tokenResult = await user.getIdTokenResult();
+        if (tokenResult?.claims?.role === 'officer' || tokenResult?.claims?.officer === true) {
+          return 'officer';
+        }
+      }
+      // 2. Check Firestore authoritative officers / users collections (never localStorage!)
+      if (db && user.uid) {
+        const officerSnap = await getDoc(doc(db, 'officers', user.uid));
+        if (officerSnap.exists() && officerSnap.data()?.active !== false) {
+          return 'officer';
+        }
+        const userSnap = await getDoc(doc(db, 'users', user.uid));
+        if (userSnap.exists()) {
+          const data = userSnap.data();
+          if (data?.role === 'officer' || data?.isOfficer === true) {
+            return 'officer';
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Authoritative role check fallback to citizen:', err);
+    }
+    return 'citizen';
+  }
+
+  public async sendPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return { success: false, message: 'Please enter a valid email address.' };
+    }
+    if (this.mode === 'FIREBASE' && isFirebaseConfigured() && auth) {
+      try {
+        await sendPasswordResetEmail(auth, cleanEmail);
+        return {
+          success: true,
+          message: `Password reset instructions sent to ${cleanEmail}. Check your inbox.`,
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          message: err?.message || 'Unable to send password reset email.',
+        };
+      }
+    }
+    return {
+      success: true,
+      message: `Demonstration mode: password reset link prepared for ${cleanEmail}. Use the listed demo credentials or register a new account.`,
+    };
+  }
+
+  public async loginWithGoogle(): Promise<{ uid: string; email: string; displayName: string; role: 'officer' | 'citizen' } | null> {
     if (isFirebaseConfigured() && auth) {
       const result = await signInWithPopup(auth, googleProvider);
+      const role = await this.getAuthoritativeFirebaseRole(result.user);
       return {
         uid: result.user.uid,
         email: result.user.email || '',
         displayName: result.user.displayName || 'Authorized User',
+        role,
       };
     }
     return null;

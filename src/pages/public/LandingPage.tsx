@@ -69,18 +69,15 @@ export const LandingPage: React.FC = () => {
 
           {/* Center Navigation Links */}
           <nav className="hidden md:flex items-center gap-6 text-xs font-semibold text-slate-300">
+            <NavLink to="/" className="hover:text-cyan-400 transition-colors text-white">
+              Home
+            </NavLink>
             <a href="#how-it-works" className="hover:text-cyan-400 transition-colors">
               How It Works
             </a>
             <NavLink to="/map-public" className="hover:text-cyan-400 transition-colors">
               Live Flood Map
             </NavLink>
-            <a href="#why-reporting" className="hover:text-cyan-400 transition-colors">
-              Citizen Impact
-            </a>
-            <a href="#ai-assessment" className="hover:text-cyan-400 transition-colors">
-              AI Verification
-            </a>
             <NavLink to="/safety" className="hover:text-cyan-400 transition-colors">
               Safety Information
             </NavLink>
@@ -104,7 +101,7 @@ export const LandingPage: React.FC = () => {
                   to="/login"
                   className="px-3.5 py-2 text-xs font-bold text-slate-300 hover:text-white transition-colors"
                 >
-                  Sign In
+                  Login
                 </NavLink>
                 <NavLink
                   to="/register"
@@ -194,11 +191,11 @@ export const LandingPage: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
                     <span className="text-xs font-bold text-white uppercase tracking-wider">
-                      Live Basin Telemetry
+                      Colombo Demonstration GIS Preview
                     </span>
                   </div>
                   <span className="text-[11px] font-mono text-cyan-400 font-semibold">
-                    {weather.currentRainfallMm} mm/h (Colombo Metro)
+                    {weather.currentRainfallMm} mm/h ({weather.isLive ? 'Live Radar' : 'Simulated Weather'})
                   </span>
                 </div>
 

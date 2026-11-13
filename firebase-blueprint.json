@@ -105,6 +105,18 @@
       "schema": { "$ref": "#/entities/FloodHotspot" },
       "description": "Algorithmic incident clusters grouped by 500m proximity"
     },
+    "/notifications/{notificationId}": {
+      "schema": { "type": "object" },
+      "description": "In-app notifications scoped per citizen UID or emergency officer"
+    },
+    "/status_history/{historyId}": {
+      "schema": { "type": "object" },
+      "description": "Immutable status transition audit trail linked to flood reports"
+    },
+    "/system_settings/{settingId}": {
+      "schema": { "type": "object" },
+      "description": "Server and clustering risk configuration settings"
+    },
     "/blockchain_records/{recordId}": {
       "schema": { "$ref": "#/entities/BlockchainRecord" },
       "description": "Immutable disaster event state log"

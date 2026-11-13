@@ -6,6 +6,7 @@
 export type IncidentStatus =
   | 'Submitted'
   | 'Under Review'
+  | 'More Info Requested'
   | 'Verified'
   | 'Alert Issued'
   | 'Resolved'
@@ -18,10 +19,22 @@ export interface StatusHistoryEntry {
   note?: string;
 }
 
+export type AiStatus = 'COMPLETED' | 'PENDING' | 'FAILED';
+
 export interface AiVerificationDetails {
   method: string;
   modelName?: string;
-  aiAssessment?: 'Possible Flooding Detected' | 'No Clear Flooding Detected' | 'Uncertain' | 'Simulation Result' | string;
+  aiStatus?: AiStatus;
+  hasVisibleFlooding?: boolean;
+  aiAssessment?:
+    | 'Possible Flooding Detected'
+    | 'No Clear Flooding Detected'
+    | 'Uncertain Image'
+    | 'Invalid or Unusable Photograph'
+    | 'AI Processing Failed'
+    | 'Uncertain'
+    | 'Simulation Result'
+    | string;
   officialStatus?: 'Under Review' | string;
   confidence: number;
   explanation: string;
@@ -47,6 +60,7 @@ export interface FloodReport {
   roadAccessibility: 'Open' | 'Partially Blocked' | 'Completely Blocked';
   floodType: 'Flash Flood' | 'Street Waterlogging' | 'Canal Overflow' | 'Drainage Blockage';
   description: string;
+  additionalObservations?: string;
   imageUrl?: string;
   reporterName?: string;
   reporterPhone?: string;
@@ -61,6 +75,7 @@ export interface FloodReport {
   verifiedBy?: string;
   aiConfidence?: number;
   aiClassification?: string;
+  aiStatus?: AiStatus;
   aiVerificationDetails?: AiVerificationDetails;
   isDuplicate?: boolean;
   duplicateOfReportId?: string;
@@ -419,7 +434,7 @@ export function simulateAiVerification(params: {
   hasImage: boolean;
   description: string;
 }): AiVerificationDetails {
-  const { hasImage, waterLevel, floodType } = params;
+  const { hasImage, waterLevel } = params;
   const timestamp = new Date().toISOString();
   const disclaimer = 'AI assessment is an assistive early warning signal only. Official verification requires authorized emergency officer confirmation.';
 
@@ -427,7 +442,9 @@ export function simulateAiVerification(params: {
     return {
       method: 'Demonstration Heuristic (No Image)',
       modelName: 'None (Simulation)',
-      aiAssessment: 'Uncertain',
+      aiStatus: 'COMPLETED',
+      hasVisibleFlooding: false,
+      aiAssessment: 'Uncertain Image',
       officialStatus: 'Under Review',
       confidence: 0,
       explanation: 'No photograph provided with report. Report queued for field inspection.',
@@ -446,7 +463,9 @@ export function simulateAiVerification(params: {
   return {
     method: 'Demonstration Heuristic (Simulation)',
     modelName: 'None (Academic Simulation)',
-    aiAssessment: 'Simulation Result',
+    aiStatus: 'COMPLETED',
+    hasVisibleFlooding: true,
+    aiAssessment: 'Possible Flooding Detected',
     officialStatus: 'Under Review',
     confidence,
     explanation: `Simulated texture analysis (Academic Prototype): Road surface optical reflectivity consistent with ${waterLevel.toLowerCase()} water accumulation.`,
@@ -536,6 +555,7 @@ export function calculateDynamicAnalytics(
   const statusCounts: Record<IncidentStatus, number> = {
     Submitted: 0,
     'Under Review': 0,
+    'More Info Requested': 0,
     Verified: 0,
     'Alert Issued': 0,
     Resolved: 0,

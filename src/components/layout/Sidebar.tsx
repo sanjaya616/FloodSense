@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Map,
@@ -31,8 +31,15 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
-  const { role, userProfile, switchPersona } = useFlood();
+  const { authenticatedRole, userProfile, logout } = useFlood();
   const location = useLocation();
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    await logout();
+    onClose();
+    navigate('/login');
+  };
 
   const navItems = [
     { name: 'Overview', path: '/officer/overview', legacyPath: '/', icon: LayoutDashboard },
@@ -160,22 +167,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 {userProfile.name}
               </p>
               <p className="text-[11px] text-slate-400 truncate">
-                {role === 'officer' ? 'Emergency Officer' : 'Citizen Reporter'}
+                {authenticatedRole === 'officer' ? 'Emergency Officer' : 'Citizen Reporter'}
               </p>
             </div>
           </NavLink>
 
-          <NavLink
-            to="/citizen"
-            onClick={() => {
-              switchPersona('citizen');
-              onClose();
-            }}
-            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-800 hover:bg-cyan-950/60 border border-slate-700 text-cyan-400 hover:text-cyan-300 text-xs font-semibold transition-all group"
-          >
-            <span>Switch to Citizen Portal</span>
-            <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
-          </NavLink>
+          <div className="space-y-1.5">
+            <NavLink
+              to="/citizen"
+              onClick={onClose}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-800 hover:bg-cyan-950/60 border border-slate-700 text-cyan-400 hover:text-cyan-300 text-xs font-semibold transition-all group"
+            >
+              <span>View Citizen Portal</span>
+              <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+            </NavLink>
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/70 hover:bg-red-950/60 border border-slate-800 hover:border-red-900/60 text-slate-400 hover:text-red-300 text-xs font-semibold transition-all cursor-pointer"
+            >
+              <span>Sign Out</span>
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
 
           <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-500">
             <span className="font-mono">v1.2.0-academic</span>

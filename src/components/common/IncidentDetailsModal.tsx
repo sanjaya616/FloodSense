@@ -41,7 +41,8 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
   report,
   onClose,
 }) => {
-  const { role, userProfile, updateIncidentStatus } = useFlood();
+  const { authenticatedRole, userProfile, updateIncidentStatus } = useFlood();
+  const isOfficerSession = authenticatedRole === 'officer';
   const [newStatus, setNewStatus] = useState<IncidentStatus>(
     report?.incidentStatus || 'Submitted'
   );
@@ -114,6 +115,8 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
                   ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                   : report.incidentStatus === 'Verified'
                   ? 'bg-cyan-100 text-cyan-800 border border-cyan-200'
+                  : report.incidentStatus === 'More Info Requested'
+                  ? 'bg-purple-100 text-purple-800 border border-purple-200'
                   : report.incidentStatus === 'Rejected'
                   ? 'bg-slate-200 text-slate-700'
                   : 'bg-amber-100 text-amber-800 border border-amber-200'
@@ -344,7 +347,7 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
 
           {/* Privacy Protected Reporter Information */}
           <div className="pt-2 border-t border-slate-100 text-xs">
-            {role === 'officer' ? (
+            {isOfficerSession ? (
               <div className="flex items-center justify-between text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-200">
                 <div className="flex items-center gap-2">
                   <User className="w-3.5 h-3.5 text-slate-500" />
@@ -369,8 +372,8 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
             )}
           </div>
 
-          {/* OFFICER MANAGEMENT CONTROLS (Only visible for Emergency Officer persona) */}
-          {role === 'officer' && (
+          {/* OFFICER MANAGEMENT CONTROLS (Only visible for Authenticated Emergency Officer) */}
+          {isOfficerSession && (
             <div className="p-4 bg-slate-900 text-white rounded-xl space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
@@ -401,10 +404,11 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
                   >
                     <option value="Submitted">1. Submitted</option>
                     <option value="Under Review">2. Under Review</option>
-                    <option value="Verified">3. Verified</option>
-                    <option value="Alert Issued">4. Alert Issued</option>
-                    <option value="Resolved">5. Resolved</option>
-                    <option value="Rejected">6. Rejected</option>
+                    <option value="More Info Requested">3. More Info Requested</option>
+                    <option value="Verified">4. Verified</option>
+                    <option value="Alert Issued">5. Alert Issued</option>
+                    <option value="Resolved">6. Resolved</option>
+                    <option value="Rejected">7. Rejected</option>
                   </select>
                 </div>
 
@@ -424,7 +428,7 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
 
               {/* Quick Action Buttons */}
               <div className="pt-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     disabled={isUpdating}
@@ -433,6 +437,16 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
                   >
                     <FileCheck className="w-3.5 h-3.5" />
                     <span>Verify Incident</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isUpdating}
+                    onClick={() => handleUpdateStatus('More Info Requested')}
+                    className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs rounded-lg transition-colors flex items-center gap-1 disabled:opacity-50"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Request Info</span>
                   </button>
 
                   <button
