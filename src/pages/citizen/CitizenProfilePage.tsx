@@ -16,6 +16,7 @@ import {
   LogOut,
   FileText,
   Bell,
+  AlertTriangle,
 } from 'lucide-react';
 import { useFlood } from '../../context/FloodContext';
 
@@ -27,6 +28,8 @@ export const CitizenProfilePage: React.FC = () => {
   const [phone, setPhone] = useState(userProfile.phone);
   const [sector, setSector] = useState(userProfile.emergencySector);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     setName(userProfile.name);
@@ -34,15 +37,26 @@ export const CitizenProfilePage: React.FC = () => {
     setSector(userProfile.emergencySector);
   }, [userProfile]);
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateUserProfile({
-      name: name.trim() || userProfile.name,
-      phone: phone.trim() || userProfile.phone,
-      emergencySector: sector.trim() || userProfile.emergencySector,
-    });
-    setSavedNotice(true);
-    setTimeout(() => setSavedNotice(false), 3500);
+    setSaveError(null);
+    setSavedNotice(false);
+    setIsSaving(true);
+    try {
+      const res = await updateUserProfile({
+        name: name.trim() || userProfile.name,
+        phone: phone.trim() || userProfile.phone,
+        emergencySector: sector.trim() || userProfile.emergencySector,
+      });
+      if (!res.success) {
+        setSaveError(res.error || 'Could not save profile changes.');
+        return;
+      }
+      setSavedNotice(true);
+      setTimeout(() => setSavedNotice(false), 3500);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -65,7 +79,7 @@ export const CitizenProfilePage: React.FC = () => {
             Citizen Profile & Preferences
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Manage your contact information for DMC field updates and review your account security role.
+            Manage your contact information for municipal field updates and review your account security role.
           </p>
         </div>
 
@@ -83,6 +97,13 @@ export const CitizenProfilePage: React.FC = () => {
         <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs text-emerald-800 flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
           <span>Your citizen profile details have been updated.</span>
+        </div>
+      )}
+
+      {saveError && (
+        <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-800 flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+          <span>{saveError}</span>
         </div>
       )}
 
@@ -133,7 +154,7 @@ export const CitizenProfilePage: React.FC = () => {
             <span>Contact & Neighborhood Information</span>
           </h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            Personal contact details are private and visible only to authorized DMC officers reviewing your reports.
+            Personal contact details are private and visible only to authorized municipal emergency officers reviewing your reports (prototype workflow).
           </p>
         </div>
 
@@ -203,9 +224,10 @@ export const CitizenProfilePage: React.FC = () => {
         <div className="flex justify-end pt-2">
           <button
             type="submit"
-            className="px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white font-bold text-xs shadow-sm transition-colors cursor-pointer"
+            disabled={isSaving}
+            className="px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white font-bold text-xs shadow-sm transition-colors cursor-pointer disabled:opacity-50"
           >
-            Save Profile Changes
+            {isSaving ? 'Saving Profile...' : 'Save Profile Changes'}
           </button>
         </div>
       </form>

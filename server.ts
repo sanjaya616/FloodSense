@@ -13,9 +13,47 @@ import fs from 'fs';
 import { initializeApp as initializeAdminApp, cert, getApps as getAdminApps, App as AdminApp } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
+import {
+  areReportsDuplicate,
+  clusterReports,
+  validateCoordinates,
+  FloodReport,
+} from './src/utils/floodLogic.ts';
+import {
+  verifyBootstrapSecretMatch,
+  detectProfileElevationAttempt,
+  sanitizeEditableProfileUpdates,
+} from './scripts/officerBootstrapCore.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+interface AppletFirebaseConfig {
+  projectId?: string;
+  firestoreDatabaseId?: string;
+}
+
+function loadAppletFirebaseConfig(): AppletFirebaseConfig {
+  try {
+    const cfgPath = path.resolve(__dirname, 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      return {
+        projectId:
+          typeof parsed.projectId === 'string' && parsed.projectId.trim() && parsed.projectId !== 'remixed-project-id'
+            ? parsed.projectId.trim()
+            : undefined,
+        firestoreDatabaseId:
+          typeof parsed.firestoreDatabaseId === 'string' && parsed.firestoreDatabaseId.trim()
+            ? parsed.firestoreDatabaseId.trim()
+            : undefined,
+      };
+    }
+  } catch {}
+  return {};
+}
+
+const appletFirebaseConfig = loadAppletFirebaseConfig();
 
 export type ServiceHealthState =
   | 'NOT_CONFIGURED'
@@ -28,7 +66,11 @@ export type ServiceHealthState =
 interface CachedWeather {
   data: any;
   timestamp: number;
+  fetchedAt: string;
+  cacheExpiresAt: string;
 }
+
+const WEATHER_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
 const GEMINI_VERIFY_MODEL = 'gemini-4-hydrogen';
@@ -55,26 +97,33 @@ export function detectImageMimeFromBuffer(buf: Buffer): 'image/jpeg' | 'image/pn
 }
 
 /**
- * Selects the next 3 hourly forecast values strictly after current Colombo time.
+ * Selects the next 3 consecutive hourly forecast values strictly after current Colombo time.
+ * Never coerces missing/null slots to zero.
  */
 export function extractNext3HourForecast(
   hourlyTime: string[],
-  hourlyPrecipitation: number[],
+  hourlyPrecipitation: Array<number | null | undefined>,
   currentTimeIsoLocal: string
 ): {
   values: number[];
-  totalMm: number;
+  totalMm: number | null;
   forecastTimeRange: string | null;
   forecastAvailable: boolean;
+  forecastCompleteness: 'COMPLETE' | 'INCOMPLETE' | 'UNAVAILABLE';
 } {
   if (!Array.isArray(hourlyTime) || !Array.isArray(hourlyPrecipitation) || hourlyTime.length === 0) {
-    return { values: [], totalMm: 0, forecastTimeRange: null, forecastAvailable: false };
+    return {
+      values: [],
+      totalMm: null,
+      forecastTimeRange: null,
+      forecastAvailable: false,
+      forecastCompleteness: 'UNAVAILABLE',
+    };
   }
 
   const parseColomboMs = (t: string) => {
     if (!t) return NaN;
     const normalized = t.includes('+') || t.endsWith('Z') ? t : `${t}:00+05:30`;
-    // If string already has seconds like HH:MM:SS, avoid appending extra :00
     const safeStr = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(t) ? `${t}:00+05:30` : normalized;
     return Date.parse(safeStr);
   };
@@ -109,14 +158,29 @@ export function extractNext3HourForecast(
   }
 
   if (startIdx === -1) {
-    return { values: [], totalMm: 0, forecastTimeRange: null, forecastAvailable: false };
+    return {
+      values: [],
+      totalMm: null,
+      forecastTimeRange: null,
+      forecastAvailable: false,
+      forecastCompleteness: 'UNAVAILABLE',
+    };
   }
 
-  const endIdx = Math.min(hourlyTime.length, startIdx + 3);
-  const sliceValues = hourlyPrecipitation
-    .slice(startIdx, endIdx)
-    .map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0));
+  const rawSlice = hourlyPrecipitation.slice(startIdx, startIdx + 3);
+  const validValues = rawSlice.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
 
+  if (rawSlice.length < 3 || validValues.length < 3) {
+    return {
+      values: validValues,
+      totalMm: null,
+      forecastTimeRange: null,
+      forecastAvailable: false,
+      forecastCompleteness: validValues.length === 0 ? 'UNAVAILABLE' : 'INCOMPLETE',
+    };
+  }
+
+  const endIdx = startIdx + 3;
   const startLabel = hourlyTime[startIdx]?.slice(11, 16) || '';
   const endHourDate = new Date(parseColomboMs(hourlyTime[endIdx - 1]) + 60 * 60 * 1000);
   const endLabel = !isNaN(endHourDate.getTime())
@@ -128,40 +192,65 @@ export function extractNext3HourForecast(
       }).format(endHourDate)
     : hourlyTime[endIdx - 1]?.slice(11, 16) || '';
 
-  const totalMm = Number(sliceValues.reduce((sum, val) => sum + val, 0).toFixed(1));
+  const totalMm = Number(validValues.reduce((sum, val) => sum + val, 0).toFixed(1));
   return {
-    values: sliceValues,
+    values: validValues,
     totalMm,
     forecastTimeRange: `${startLabel} - ${endLabel} (Asia/Colombo)`,
-    forecastAvailable: sliceValues.length > 0,
+    forecastAvailable: true,
+    forecastCompleteness: 'COMPLETE',
   };
 }
 
-// Lazy Firebase Admin initialization (fails gracefully when service account is not provided)
+// Lazy Firebase Admin initialization (supports full credentials OR projectId-based ID token verification)
 let adminApp: AdminApp | null = null;
 let adminInitError: string | null = null;
+let adminHasCredentials = false;
 let adminAttempted = false;
 
 function getFirebaseAdmin() {
-  if (adminAttempted) return { adminApp, adminInitError };
+  if (adminAttempted) return { adminApp, adminInitError, adminHasCredentials };
   adminAttempted = true;
+  const cleanEnvProjectId = (process.env.VITE_FIREBASE_PROJECT_ID || '')
+    .trim()
+    .replace(/,$/, '')
+    .replace(/^["']|["']$/g, '')
+    .trim();
+  const projectId = appletFirebaseConfig.projectId || cleanEnvProjectId || undefined;
   try {
     if (getAdminApps().length > 0) {
       adminApp = getAdminApps()[0];
-      return { adminApp, adminInitError };
+      adminHasCredentials = Boolean(
+        (process.env.FIREBASE_SERVICE_ACCOUNT_JSON && process.env.FIREBASE_SERVICE_ACCOUNT_JSON.trim().startsWith('{')) ||
+          (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) ||
+          process.env.K_SERVICE
+      );
+      return { adminApp, adminInitError, adminHasCredentials };
     }
     const rawJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
     if (rawJson && rawJson.trim().startsWith('{')) {
       const parsed = JSON.parse(rawJson);
-      adminApp = initializeAdminApp({ credential: cert(parsed) });
+      adminApp = initializeAdminApp({
+        credential: cert(parsed),
+        ...(projectId ? { projectId } : {}),
+      });
+      adminHasCredentials = true;
     } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
-      adminApp = initializeAdminApp();
+      adminApp = initializeAdminApp({
+        ...(projectId ? { projectId } : {}),
+      });
+      adminHasCredentials = true;
+    } else if (projectId) {
+      // Allows cryptographic Firebase ID token verification (RS256 public keys) without private service account JSON
+      adminApp = initializeAdminApp({ projectId });
+      adminHasCredentials = Boolean(process.env.K_SERVICE);
     }
   } catch (err: any) {
     adminInitError = err?.message || 'Failed to initialize Firebase Admin SDK';
     adminApp = null;
+    adminHasCredentials = false;
   }
-  return { adminApp, adminInitError };
+  return { adminApp, adminInitError, adminHasCredentials };
 }
 
 // Simple sliding-window in-memory rate limiter
@@ -185,11 +274,50 @@ function createRateLimiter(maxRequests: number, windowMs: number) {
   };
 }
 
+export interface AdminOverride {
+  verifyIdToken: (token: string) => Promise<{
+    uid: string;
+    email?: string;
+    name?: string;
+    role?: string;
+    officer?: boolean;
+  }>;
+  firestore: any;
+  setCustomUserClaims?: (uid: string, claims: Record<string, any>) => Promise<void>;
+  hasAnyExistingOfficerClaim?: () => Promise<boolean>;
+}
+
 export interface ServerTestOverrides {
   geminiApiKey?: string | null;
   fetchImpl?: typeof fetch;
   aiClientFactory?: (apiKey: string) => { models: { generateContent: (args: any) => Promise<{ text?: string }> } };
   forceSkipAuthCheck?: boolean;
+  floodsenseMode?: 'DEMO' | 'LIVE';
+  adminOverride?: AdminOverride | null;
+  officerBootstrapSecret?: string | null;
+}
+
+export function buildSanitizedPublicReport(report: FloodReport): Record<string, any> {
+  const approxLat = Number(Number(report.lat).toFixed(3));
+  const approxLng = Number(Number(report.lng).toFixed(3));
+  return {
+    id: report.id,
+    hotspotId: report.hotspotId || null,
+    location: String(report.location || '').slice(0, 160),
+    area: String(report.area || '').slice(0, 80),
+    lat: approxLat,
+    lng: approxLng,
+    coordinatePrecision: 'APPROX_100M_GRID',
+    isPublicRedacted: true,
+    timestamp: report.timestamp || new Date().toISOString(),
+    waterLevel: report.waterLevel || 'Moderate',
+    roadAccessibility: report.roadAccessibility || 'Partially Blocked',
+    floodType: report.floodType || 'Street Waterlogging',
+    riskLevel: report.riskLevel || 'LOW',
+    verificationStatus: report.verificationStatus || 'UNDER REVIEW',
+    incidentStatus: report.incidentStatus || 'Submitted',
+    isDuplicate: Boolean(report.isDuplicate),
+  };
 }
 
 export function createApiApp(overrides: ServerTestOverrides = {}) {
@@ -198,12 +326,17 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
   const fetchFn = overrides.fetchImpl || fetch;
-  let cachedWeather: CachedWeather | null = null;
+  const weatherCache = new Map<string, CachedWeather>();
   let lastWeatherSuccessTime: string | null = null;
   let lastWeatherError: string | null = null;
   let lastTileServiceSuccessTime: string | null = null;
   let lastAiSuccessTime: string | null = null;
   let lastAiError: string | null = null;
+
+  const getFloodSenseMode = (): 'DEMO' | 'LIVE' => {
+    if (overrides.floodsenseMode) return overrides.floodsenseMode;
+    return process.env.FLOODSENSE_MODE?.toUpperCase() === 'LIVE' ? 'LIVE' : 'DEMO';
+  };
 
   const getGeminiKey = () => {
     if (overrides.geminiApiKey !== undefined) return overrides.geminiApiKey;
@@ -213,54 +346,469 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
 
   const hasClientFirebaseEnv = () =>
     Boolean(
-      process.env.VITE_FIREBASE_API_KEY &&
+      (process.env.VITE_FIREBASE_API_KEY &&
         process.env.VITE_FIREBASE_PROJECT_ID &&
-        process.env.VITE_FIREBASE_API_KEY !== 'MY_FIREBASE_API_KEY'
+        process.env.VITE_FIREBASE_API_KEY !== 'MY_FIREBASE_API_KEY') ||
+        appletFirebaseConfig.projectId
     );
 
-  async function verifyOptionalLiveAuth(req: Request): Promise<{ ok: boolean; uid?: string; email?: string; role?: string; error?: string }> {
-    if (overrides.forceSkipAuthCheck) return { ok: true };
-    const { adminApp: admin } = getFirebaseAdmin();
+  const resolveAdminServices = (): {
+    verifyIdToken: ((token: string) => Promise<any>) | null;
+    firestore: any;
+    setCustomUserClaims: ((uid: string, claims: Record<string, any>) => Promise<void>) | null;
+    hasAnyExistingOfficerClaim: (() => Promise<boolean>) | null;
+    hasFullAdmin: boolean;
+    adminInitErr: string | null;
+  } => {
+    if (overrides.adminOverride !== undefined) {
+      if (overrides.adminOverride === null) {
+        return {
+          verifyIdToken: null,
+          firestore: null,
+          setCustomUserClaims: null,
+          hasAnyExistingOfficerClaim: null,
+          hasFullAdmin: false,
+          adminInitErr: 'Admin SDK unconfigured',
+        };
+      }
+      return {
+        verifyIdToken: overrides.adminOverride.verifyIdToken,
+        firestore: overrides.adminOverride.firestore,
+        setCustomUserClaims: overrides.adminOverride.setCustomUserClaims || null,
+        hasAnyExistingOfficerClaim: overrides.adminOverride.hasAnyExistingOfficerClaim || null,
+        hasFullAdmin: Boolean(overrides.adminOverride.firestore),
+        adminInitErr: null,
+      };
+    }
+    const { adminApp: admin, adminInitError, adminHasCredentials: hasCreds } = getFirebaseAdmin();
+    if (!admin) {
+      return {
+        verifyIdToken: null,
+        firestore: null,
+        setCustomUserClaims: null,
+        hasAnyExistingOfficerClaim: null,
+        hasFullAdmin: false,
+        adminInitErr: adminInitError,
+      };
+    }
+    const dbId = process.env.FIREBASE_DATABASE_ID || appletFirebaseConfig.firestoreDatabaseId;
+    const firestoreInstance = hasCreds
+      ? dbId && dbId !== '(default)'
+        ? getAdminFirestore(admin, dbId)
+        : getAdminFirestore(admin)
+      : null;
+
+    return {
+      verifyIdToken: (token: string) => getAdminAuth(admin).verifyIdToken(token),
+      firestore: firestoreInstance,
+      setCustomUserClaims: hasCreds
+        ? (uid: string, claims: Record<string, any>) => getAdminAuth(admin).setCustomUserClaims(uid, claims)
+        : null,
+      hasAnyExistingOfficerClaim: hasCreds
+        ? async () => {
+            const adminAuth = getAdminAuth(admin);
+            let pageToken: string | undefined;
+            do {
+              const page = await adminAuth.listUsers(1000, pageToken);
+              for (const u of page.users) {
+                if (u.customClaims?.role === 'officer' || u.customClaims?.officer === true) {
+                  return true;
+                }
+              }
+              pageToken = page.pageToken;
+            } while (pageToken);
+            return false;
+          }
+        : null,
+      hasFullAdmin: hasCreds,
+      adminInitErr: null,
+    };
+  };
+
+  async function resolveAuthoritativeRole(
+    decoded: { uid: string; role?: string; officer?: boolean },
+    firestore: any
+  ): Promise<{
+    role: 'officer' | 'citizen';
+    verificationSource: 'custom_claims' | 'officers_collection' | 'revoked' | 'none';
+  }> {
+    let officerSnap: any = null;
+    if (firestore && decoded.uid) {
+      try {
+        officerSnap = await firestore.collection('officers').doc(decoded.uid).get();
+        // Explicit revocation in /officers/{uid} overrides unexpired custom claims
+        if (officerSnap.exists && officerSnap.data()?.active === false) {
+          return { role: 'citizen', verificationSource: 'revoked' };
+        }
+      } catch {
+        // Ignore Firestore read failures on public/claim-only path
+      }
+    }
+
+    if (decoded.role === 'officer' || decoded.officer === true) {
+      return { role: 'officer', verificationSource: 'custom_claims' };
+    }
+
+    if (officerSnap?.exists && officerSnap.data()?.active !== false) {
+      return { role: 'officer', verificationSource: 'officers_collection' };
+    }
+
+    return { role: 'citizen', verificationSource: 'none' };
+  }
+
+  async function verifyRequestAuth(
+    req: Request,
+    options?: { requireOfficer?: boolean }
+  ): Promise<{
+    ok: boolean;
+    status?: number;
+    uid?: string;
+    email?: string;
+    role?: 'officer' | 'citizen';
+    error?: string;
+  }> {
+    if (overrides.forceSkipAuthCheck) {
+      return { ok: true, uid: 'test-user', role: 'citizen' };
+    }
+
+    const mode = getFloodSenseMode();
+    const { verifyIdToken, firestore } = resolveAdminServices();
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
 
-    // Require verified Firebase ID token when both Firebase client mode and Admin SDK are active
-    if (hasClientFirebaseEnv() && admin) {
+    if (mode === 'LIVE') {
+      if (!verifyIdToken || !firestore) {
+        return {
+          ok: false,
+          status: 503,
+          error: 'FIREBASE_ADMIN_UNAVAILABLE: Server requires Firebase Admin credentials when FLOODSENSE_MODE=LIVE.',
+        };
+      }
       if (!token) {
-        return { ok: false, error: 'Missing Authorization Bearer token for live Firebase mode.' };
+        return {
+          ok: false,
+          status: 401,
+          error: 'Missing Authorization Bearer token for LIVE mode.',
+        };
       }
       try {
-        const decoded = await getAdminAuth(admin).verifyIdToken(token);
-        const db = getAdminFirestore(admin);
-        const userSnap = await db.collection('users').doc(decoded.uid).get();
-        const role = userSnap.exists ? (userSnap.data()?.role as string) : 'citizen';
+        const decoded = await verifyIdToken(token);
+        const { role } = await resolveAuthoritativeRole(decoded, firestore);
+        if (options?.requireOfficer && role !== 'officer') {
+          return { ok: false, status: 403, error: 'Officer authorization required.' };
+        }
         return { ok: true, uid: decoded.uid, email: decoded.email, role };
       } catch (err: any) {
-        return { ok: false, error: err?.message || 'Invalid Firebase ID token.' };
+        return { ok: false, status: 401, error: err?.message || 'Invalid Firebase ID token.' };
       }
     }
 
-    // If token was provided and Admin SDK exists, verify it opportunistically
-    if (token && admin) {
+    // DEMO mode: Verify token opportunistically if provided and Admin SDK is ready
+    if (token && verifyIdToken) {
       try {
-        const decoded = await getAdminAuth(admin).verifyIdToken(token);
-        return { ok: true, uid: decoded.uid, email: decoded.email };
+        const decoded = await verifyIdToken(token);
+        const { role } = await resolveAuthoritativeRole(decoded, firestore);
+        if (options?.requireOfficer && role !== 'officer') {
+          return { ok: false, status: 403, error: 'Officer authorization required.' };
+        }
+        return { ok: true, uid: decoded.uid, email: decoded.email, role };
       } catch (err: any) {
-        return { ok: false, error: err?.message || 'Invalid Bearer token.' };
+        return { ok: false, status: 401, error: err?.message || 'Invalid Bearer token.' };
       }
     }
 
-    return { ok: true };
+    return { ok: true, role: 'citizen' };
   }
 
   const aiRateLimiter = createRateLimiter(20, 5 * 60 * 1000);
   const syncRateLimiter = createRateLimiter(30, 5 * 60 * 1000);
+  const authRateLimiter = createRateLimiter(30, 5 * 60 * 1000);
+
+  // --- API ROUTE 0A: Backend Emergency Officer Authorization Verification ---
+  // Always enforces Firebase ID token cryptographic verification and checks trusted custom claims / /officers/{uid}.
+  // Never trusts role strings supplied in request bodies or headers.
+  app.post('/api/auth/verify-officer', authRateLimiter, async (req, res) => {
+    const { verifyIdToken, firestore } = resolveAdminServices();
+    if (!verifyIdToken) {
+      return res.status(503).json({
+        authorized: false,
+        error: 'FIREBASE_ADMIN_UNAVAILABLE: Server cannot verify Firebase ID tokens in this environment.',
+      });
+    }
+
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    if (!token) {
+      return res.status(401).json({
+        authorized: false,
+        error: 'Authentication token required. Please sign in with Firebase Authentication.',
+      });
+    }
+
+    try {
+      const decoded = await verifyIdToken(token);
+      const { role, verificationSource } = await resolveAuthoritativeRole(decoded, firestore);
+
+      if (role !== 'officer') {
+        return res.status(403).json({
+          authorized: false,
+          role: 'citizen',
+          uid: decoded.uid,
+          email: decoded.email || null,
+          error:
+            'Access denied: this account is not pre-authorized as an Emergency Officer. Only pre-authorized municipal officers may access the Officer Operations Center.',
+        });
+      }
+
+      return res.json({
+        authorized: true,
+        role: 'officer',
+        uid: decoded.uid,
+        email: decoded.email || null,
+        verificationSource,
+        verifiedAt: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      return res.status(401).json({
+        authorized: false,
+        error: err?.message || 'Invalid or expired Firebase authentication token.',
+      });
+    }
+  });
+
+  // --- API ROUTE 0B: Verified Session Role Inspection ---
+  app.get('/api/auth/session', authRateLimiter, async (req, res) => {
+    const { verifyIdToken, firestore } = resolveAdminServices();
+    if (!verifyIdToken) {
+      return res.status(503).json({
+        authenticated: false,
+        error: 'FIREBASE_ADMIN_UNAVAILABLE',
+      });
+    }
+
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    if (!token) {
+      return res.status(401).json({
+        authenticated: false,
+        error: 'Missing Bearer token.',
+      });
+    }
+
+    try {
+      const decoded = await verifyIdToken(token);
+      const { role, verificationSource } = await resolveAuthoritativeRole(decoded, firestore);
+      return res.json({
+        authenticated: true,
+        uid: decoded.uid,
+        email: decoded.email || null,
+        role,
+        verificationSource,
+      });
+    } catch (err: any) {
+      return res.status(401).json({
+        authenticated: false,
+        error: err?.message || 'Invalid Bearer token.',
+      });
+    }
+  });
+
+  // --- API ROUTE 0C: One-Time First Emergency Officer Bootstrap (Self-Disabling, OFFICER_BOOTSTRAP_SECRET Gated) ---
+  // Assigns the 'officer' custom claim ONLY to the very first emergency responder account when OFFICER_BOOTSTRAP_SECRET matches.
+  // Never exposes public officer registration and never creates a System Administrator role.
+  app.post('/api/auth/bootstrap-first-officer', authRateLimiter, async (req, res) => {
+    const configuredSecret =
+      overrides.officerBootstrapSecret !== undefined
+        ? overrides.officerBootstrapSecret
+        : process.env.OFFICER_BOOTSTRAP_SECRET;
+
+    const { verifyIdToken, firestore, setCustomUserClaims, hasAnyExistingOfficerClaim } = resolveAdminServices();
+    if (!verifyIdToken || !firestore || !setCustomUserClaims) {
+      return res.status(503).json({
+        ok: false,
+        error:
+          'FIREBASE_ADMIN_UNAVAILABLE: Firebase Admin SDK credentials are required to assign officer custom claims.',
+      });
+    }
+
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    if (!token) {
+      return res.status(401).json({ ok: false, error: 'Missing Firebase Authentication Bearer token.' });
+    }
+
+    const providedSecret = typeof req.body?.bootstrapSecret === 'string' ? req.body.bootstrapSecret : '';
+    const secretCheck = verifyBootstrapSecretMatch(configuredSecret, providedSecret);
+    if (!secretCheck.valid) {
+      return res.status(403).json({
+        ok: false,
+        error:
+          secretCheck.reason ||
+          'First-officer bootstrap denied. Configure OFFICER_BOOTSTRAP_SECRET (>= 16 chars) or run "npm run officer:bootstrap".',
+      });
+    }
+
+    try {
+      const decoded = await verifyIdToken(token);
+      const existingOfficersSnap = await firestore.collection('officers').limit(1).get();
+      const existingClaim = hasAnyExistingOfficerClaim ? await hasAnyExistingOfficerClaim() : false;
+      if (!existingOfficersSnap.empty || existingClaim) {
+        return res.status(409).json({
+          ok: false,
+          error:
+            'An Emergency Officer already exists. First-officer bootstrap is permanently locked; authorize additional officers via "npm run officer:authorize".',
+        });
+      }
+
+      const existingClaims = decoded?.firebase ? {} : {};
+      await setCustomUserClaims(decoded.uid, { ...existingClaims, role: 'officer', officer: true });
+
+      const nowIso = new Date().toISOString();
+      const displayName = decoded.name || 'Emergency Management Officer';
+      await firestore.collection('officers').doc(decoded.uid).set(
+        {
+          uid: decoded.uid,
+          email: decoded.email || '',
+          displayName,
+          role: 'officer',
+          active: true,
+          department: 'Colombo Municipal Flood Operations',
+          emergencySector: 'Sector 04 — Colombo Municipal Basin',
+          authorizedAt: nowIso,
+          authorizedMethod: 'first_officer_bootstrap',
+        },
+        { merge: true }
+      );
+
+      await firestore.collection('users').doc(decoded.uid).set(
+        {
+          uid: decoded.uid,
+          email: decoded.email || '',
+          displayName,
+          name: displayName,
+          role: 'officer',
+          isOfficer: true,
+        },
+        { merge: true }
+      );
+
+      return res.json({
+        ok: true,
+        uid: decoded.uid,
+        email: decoded.email || null,
+        role: 'officer',
+        claimsAssigned: { role: 'officer', officer: true },
+        message: 'First Emergency Officer account authorized successfully.',
+      });
+    } catch (err: any) {
+      return res.status(401).json({
+        ok: false,
+        error: err?.message || 'Unable to verify Firebase token for first-officer bootstrap.',
+      });
+    }
+  });
+
+  // --- API ROUTE 0D: Officer Backend Route Guard & Profile Anti-Elevation Handler ---
+  async function requireOfficerMiddleware(req: Request, res: Response, next: NextFunction) {
+    const { verifyIdToken, firestore } = resolveAdminServices();
+    if (!verifyIdToken) {
+      return res.status(503).json({
+        authorized: false,
+        error: 'FIREBASE_ADMIN_UNAVAILABLE: Server cannot verify Firebase ID tokens in this environment.',
+      });
+    }
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    if (!token) {
+      return res.status(401).json({
+        authorized: false,
+        error: 'Missing Authorization Bearer token.',
+      });
+    }
+    try {
+      const decoded = await verifyIdToken(token);
+      const { role, verificationSource } = await resolveAuthoritativeRole(decoded, firestore);
+      if (role !== 'officer') {
+        return res.status(403).json({
+          authorized: false,
+          role: 'citizen',
+          error: 'Forbidden: explicit officer custom claim or pre-authorized officer record required for /officer routes.',
+        });
+      }
+      (req as any).officerAuth = {
+        uid: decoded.uid,
+        email: decoded.email || null,
+        role,
+        verificationSource,
+      };
+      next();
+    } catch (err: any) {
+      return res.status(401).json({
+        authorized: false,
+        error: err?.message || 'Invalid Firebase Authentication token.',
+      });
+    }
+  }
+
+  app.use('/api/officer', authRateLimiter, requireOfficerMiddleware);
+
+  app.get('/api/officer/authorize', (req, res) => {
+    const info = (req as any).officerAuth;
+    return res.json({
+      authorized: true,
+      ...info,
+    });
+  });
+
+  // Authenticated profile update endpoint — strictly blocks any RBAC / role elevation keys
+  const handleProfileUpdate = async (req: Request, res: Response) => {
+    const { verifyIdToken, firestore } = resolveAdminServices();
+    if (!verifyIdToken || !firestore) {
+      return res.status(503).json({
+        ok: false,
+        error: 'FIREBASE_ADMIN_UNAVAILABLE: Backend profile service requires Firebase Admin SDK.',
+      });
+    }
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    if (!token) {
+      return res.status(401).json({ ok: false, error: 'Missing Authorization Bearer token.' });
+    }
+
+    const elevationAttemptKeys = detectProfileElevationAttempt(req.body);
+    if (elevationAttemptKeys.length > 0) {
+      return res.status(403).json({
+        ok: false,
+        error: `Forbidden: role or identity privilege fields (${elevationAttemptKeys.join(', ')}) cannot be modified through profile updates.`,
+      });
+    }
+
+    try {
+      const decoded = await verifyIdToken(token);
+      const safeUpdates = sanitizeEditableProfileUpdates(req.body || {});
+      if (Object.keys(safeUpdates).length === 0) {
+        return res.status(400).json({ ok: false, error: 'No valid editable profile fields provided.' });
+      }
+      await firestore
+        .collection('users')
+        .doc(decoded.uid)
+        .set({ ...safeUpdates, updatedAt: new Date().toISOString() }, { merge: true });
+      return res.json({ ok: true, uid: decoded.uid, updatedFields: Object.keys(safeUpdates) });
+    } catch (err: any) {
+      return res.status(401).json({ ok: false, error: err?.message || 'Invalid authentication token.' });
+    }
+  };
+
+  app.patch('/api/users/profile', authRateLimiter, handleProfileUpdate);
+  app.put('/api/users/profile', authRateLimiter, handleProfileUpdate);
 
   // --- API ROUTE 1: Real-time System Health & Honest Service Probes ---
   app.get('/api/health', async (_req, res) => {
+    const mode = getFloodSenseMode();
     const geminiKey = getGeminiKey();
     const clientFirebaseConfigured = hasClientFirebaseEnv();
-    const { adminApp: admin, adminInitError: adminErr } = getFirebaseAdmin();
+    const { verifyIdToken, firestore, adminInitErr } = resolveAdminServices();
+    const adminReady = Boolean(verifyIdToken && firestore);
 
     // Probe OSM tile availability
     let mapState: ServiceHealthState = 'DISCONNECTED';
@@ -283,10 +831,14 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
       mapLabel = 'Tile Probe Timed Out';
     }
 
-    // Weather state based on recent live fetch or demonstration fallback
+    // Weather state based on recent live cached fetch or demonstration fallback
+    const nowMs = Date.now();
+    const freshLiveWeather = Array.from(weatherCache.values()).find(
+      (entry) => nowMs - entry.timestamp < WEATHER_CACHE_TTL_MS && entry.data?.isLive
+    );
     let weatherState: ServiceHealthState = 'NOT_VERIFIED';
     let weatherLabel = 'Not Yet Queried';
-    if (cachedWeather && Date.now() - cachedWeather.timestamp < 300000 && cachedWeather.data?.isLive) {
+    if (freshLiveWeather) {
       weatherState = 'CONNECTED';
       weatherLabel = 'Open-Meteo Live';
     } else if (lastWeatherError) {
@@ -299,9 +851,9 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
     let firebaseLabel = 'Not Configured (Demonstration Mode)';
     let firebaseRulesStatus = 'Unknown (Firebase not provisioned)';
 
-    if (admin) {
+    if (adminReady && firestore) {
       try {
-        await getAdminFirestore(admin).collection('public_reports').limit(1).get();
+        await firestore.collection('public_reports').limit(1).get();
         firebaseState = 'CONNECTED';
         firebaseLabel = 'Firebase Admin Connected';
         firebaseRulesStatus = 'Manage & verify via Firebase Console / deploy_firebase';
@@ -310,9 +862,9 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
         firebaseLabel = `Firestore Probe Error: ${err?.message || 'Unknown'}`;
         firebaseRulesStatus = 'Verification failed';
       }
-    } else if (adminErr) {
+    } else if (adminInitErr) {
       firebaseState = 'ERROR';
-      firebaseLabel = adminErr;
+      firebaseLabel = adminInitErr;
       firebaseRulesStatus = 'Admin SDK initialization error';
     } else if (clientFirebaseConfigured) {
       firebaseState = 'NOT_VERIFIED';
@@ -343,6 +895,7 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
     res.json({
       timestamp: new Date().toISOString(),
       status: 'operational',
+      floodsenseMode: mode,
       environment: process.env.NODE_ENV || 'development',
       services: {
         geminiAi: {
@@ -360,6 +913,8 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
           status: weatherLabel,
           provider: 'Open-Meteo Forecast API',
           mode: weatherState === 'CONNECTED' ? 'Live API Telemetry' : 'Demonstration Fallback / Standby',
+          cacheTtlSeconds: WEATHER_CACHE_TTL_MS / 1000,
+          cachedLocations: weatherCache.size,
           lastSuccessfulConnection: lastWeatherSuccessTime,
           lastError: lastWeatherError,
         },
@@ -367,15 +922,14 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
           state: firebaseState,
           status: firebaseLabel,
           mode: clientFirebaseConfigured ? 'Firebase Cloud Mode Configured' : 'Demonstration Mode (Local Service Layer)',
-          adminSdkReady: Boolean(admin),
+          adminSdkReady: adminReady,
           rulesConfigured: null,
           rulesNote: firebaseRulesStatus,
         },
         blockchain: {
           state: 'DEMONSTRATION_MODE' as ServiceHealthState,
-          status: 'Prototype SHA-256 Hash-Chain (Simulated)',
-          network: 'Local SHA-256 Audit Spec / Sepolia Testnet Prototype',
-          chainId: 11155111,
+          status: 'Local Prototype SHA-256 Hash-Chain (Simulated Ledger)',
+          network: 'Local Prototype SHA-256 Hash-Chain (No Mainnet/Testnet RPC)',
           isSimulated: true,
         },
         mapTileService: {
@@ -389,24 +943,46 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
     });
   });
 
-  // --- API ROUTE 2: Weather Telemetry (Open-Meteo Asia/Colombo Integration) ---
+  // --- API ROUTE 2: Weather Telemetry (Open-Meteo Asia/Colombo Integration with 5-Min Cache) ---
   app.get('/api/weather/colombo', async (req, res) => {
     const rawLat = req.query.lat ? Number(req.query.lat) : 6.9271;
     const rawLng = req.query.lng ? Number(req.query.lng) : 79.8653;
     const lat = Number.isFinite(rawLat) && rawLat >= -90 && rawLat <= 90 ? rawLat : 6.9271;
     const lng = Number.isFinite(rawLng) && rawLng >= -180 && rawLng <= 180 ? rawLng : 79.8653;
+    const cacheKey = `${lat.toFixed(2)},${lng.toFixed(2)}`;
 
-    try {
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(
-        lat.toFixed(4)
-      )}&longitude=${encodeURIComponent(
-        lng.toFixed(4)
-      )}&current=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m&hourly=precipitation,temperature_2m&timezone=Asia%2FColombo&forecast_days=2`;
+    const cachedEntry = weatherCache.get(cacheKey);
+    if (cachedEntry && Date.now() - cachedEntry.timestamp < WEATHER_CACHE_TTL_MS) {
+      return res.json({
+        ...cachedEntry.data,
+        cached: true,
+        fetchedAt: cachedEntry.fetchedAt,
+        cacheExpiresAt: cachedEntry.cacheExpiresAt,
+      });
+    }
 
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(
+      lat.toFixed(4)
+    )}&longitude=${encodeURIComponent(
+      lng.toFixed(4)
+    )}&current=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m&hourly=precipitation,temperature_2m&timezone=Asia%2FColombo&forecast_days=2`;
+
+    const fetchOpenMeteo = async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 4500);
-      const response = await fetchFn(url, { signal: controller.signal });
-      clearTimeout(timeout);
+      try {
+        return await fetchFn(url, { signal: controller.signal });
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    try {
+      let response = await fetchOpenMeteo();
+      if (!response.ok && (response.status === 429 || response.status >= 500)) {
+        await new Promise((r) => setTimeout(r, 250));
+        response = await fetchOpenMeteo();
+      }
 
       if (response.ok) {
         const data = await response.json();
@@ -428,23 +1004,35 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
         const humidity = Math.round(current.relative_humidity_2m ?? 88);
         const windSpeed = Math.round(current.wind_speed_10m ?? 18);
 
+        const nowMs = Date.now();
+        const fetchedAt = new Date(nowMs).toISOString();
+        const cacheExpiresAt = new Date(nowMs + WEATHER_CACHE_TTL_MS).toISOString();
+
         const weatherPayload = {
           success: true,
           provider: 'Open-Meteo Forecast API',
           source: 'Open-Meteo Forecast API',
           isLive: true,
           isUsingDemonstrationFallback: false,
+          cached: false,
+          fetchedAt,
+          cacheExpiresAt,
           coordinates: { lat: Number(lat.toFixed(4)), lng: Number(lng.toFixed(4)) },
           currentTempC: currentTemp,
           currentRainfallMm: Number(precip.toFixed(1)),
           expected3hRainfallMm: forecast.totalMm,
           forecastAvailable: forecast.forecastAvailable,
-          forecastTimeRange: forecast.forecastTimeRange || 'Hourly forecast unavailable',
+          forecastCompleteness: forecast.forecastCompleteness,
+          forecastTimeRange:
+            forecast.forecastTimeRange ||
+            (forecast.forecastCompleteness === 'INCOMPLETE'
+              ? 'Incomplete 3-hour forecast slots'
+              : 'Hourly forecast unavailable'),
           rainfallUnit: 'mm',
           humidityPercent: humidity,
           windSpeedKmh: windSpeed,
           windDirection,
-          updatedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Colombo' }),
+          updatedAt: new Date(nowMs).toLocaleTimeString('en-US', { timeZone: 'Asia/Colombo' }),
           condition:
             precip > 15
               ? 'Heavy Monsoon Downpour'
@@ -454,13 +1042,20 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
               ? 'Light Rain Showers'
               : 'Overcast & High Humidity',
           status:
-            precip > 10 || forecast.totalMm > 20
+            precip > 10 || (forecast.totalMm !== null && forecast.totalMm > 20)
               ? 'Precipitation Threshold Advisory'
-              : 'Normal Conditions Monitoring',
+              : forecast.forecastAvailable
+              ? 'Normal Conditions Monitoring'
+              : 'Current Weather Live (3h Forecast Unavailable)',
         };
 
-        cachedWeather = { data: weatherPayload, timestamp: Date.now() };
-        lastWeatherSuccessTime = new Date().toISOString();
+        weatherCache.set(cacheKey, {
+          data: weatherPayload,
+          timestamp: nowMs,
+          fetchedAt,
+          cacheExpiresAt,
+        });
+        lastWeatherSuccessTime = fetchedAt;
         lastWeatherError = null;
         return res.json(weatherPayload);
       }
@@ -478,11 +1073,15 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
       source: 'Demonstration Meteorological Scenario (Simulated)',
       isLive: false,
       isUsingDemonstrationFallback: true,
+      cached: false,
+      fetchedAt: null,
+      cacheExpiresAt: null,
       coordinates: { lat: Number(lat.toFixed(4)), lng: Number(lng.toFixed(4)) },
       currentTempC: 28,
       currentRainfallMm: 34.5,
-      expected3hRainfallMm: 48.0,
+      expected3hRainfallMm: null,
       forecastAvailable: false,
+      forecastCompleteness: 'UNAVAILABLE',
       forecastTimeRange: 'Demonstration Snapshot (Live Feed Unavailable)',
       rainfallUnit: 'mm',
       humidityPercent: 92,
@@ -490,15 +1089,15 @@ export function createApiApp(overrides: ServerTestOverrides = {}) {
       windDirection: 'SW',
       updatedAt: 'Demonstration Fallback',
       condition: 'Monsoonal Thunderstorms & Heavy Showers',
-      status: 'Simulated Monsoon High Runoff Scenario',
+      status: 'Simulated Monsoon Scenario (3h Live Forecast Unavailable)',
     });
   });
 
   // --- API ROUTE 3: Server-Side Multimodal AI Verification (Gemini 4 Hydrogen) ---
   app.post('/api/ai/verify', aiRateLimiter, async (req, res) => {
-    const authCheck = await verifyOptionalLiveAuth(req);
+    const authCheck = await verifyRequestAuth(req);
     if (!authCheck.ok) {
-      return res.status(401).json({ error: authCheck.error || 'Unauthorized' });
+      return res.status(authCheck.status || 401).json({ error: authCheck.error || 'Unauthorized' });
     }
 
     const {
@@ -806,66 +1405,198 @@ Provide confidenceScore strictly as a percentage from 0 to 100 (e.g., 88 for 88%
     });
   });
 
-  // --- API ROUTE 4: Trusted Server-Side Public Map & Audit Sync (Firebase Admin) ---
+  // --- API ROUTE 4: Citywide Near-Duplicate Check (Firebase Admin) ---
+  app.post('/api/reports/check-duplicate', syncRateLimiter, async (req, res) => {
+    const authCheck = await verifyRequestAuth(req);
+    if (!authCheck.ok) {
+      return res.status(authCheck.status || 401).json({ error: authCheck.error || 'Unauthorized' });
+    }
+
+    const { firestore } = resolveAdminServices();
+    if (!firestore) {
+      return res.json({
+        ok: true,
+        checkedCitywide: false,
+        isDuplicate: false,
+        duplicateOfId: null,
+      });
+    }
+
+    const { lat, lng, timestamp } = req.body || {};
+    if (typeof lat !== 'number' || typeof lng !== 'number' || !validateCoordinates(lat, lng)) {
+      return res.status(400).json({ error: 'Valid coordinates required.' });
+    }
+
+    const ts = typeof timestamp === 'string' && !isNaN(Date.parse(timestamp)) ? timestamp : new Date().toISOString();
+    try {
+      const cutoffIso = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+      const recentSnap = await firestore
+        .collection('reports')
+        .where('timestamp', '>=', cutoffIso)
+        .get();
+
+      let matchedId: string | null = null;
+      for (const docSnap of recentSnap.docs) {
+        const data = docSnap.data();
+        if (areReportsDuplicate({ lat: data.lat, lng: data.lng, timestamp: data.timestamp }, { lat, lng, timestamp: ts })) {
+          matchedId = data.id || docSnap.id;
+          break;
+        }
+      }
+
+      return res.json({
+        ok: true,
+        checkedCitywide: true,
+        isDuplicate: Boolean(matchedId),
+        duplicateOfId: matchedId,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || 'Citywide duplicate check failed.' });
+    }
+  });
+
+  // --- API ROUTE 5: Trusted Server-Side Public Map & Hotspot Sync (Firebase Admin) ---
   app.post('/api/reports/public-sync', syncRateLimiter, async (req, res) => {
-    const { adminApp: admin } = getFirebaseAdmin();
-    if (!admin) {
-      return res.status(501).json({
+    const mode = getFloodSenseMode();
+    const { firestore } = resolveAdminServices();
+    if (!firestore) {
+      return res.status(mode === 'LIVE' ? 503 : 501).json({
         ok: false,
         reason: 'ADMIN_SDK_NOT_CONFIGURED',
         message: 'Server-side Firebase Admin SDK is not provisioned in this environment.',
       });
     }
 
-    const authCheck = await verifyOptionalLiveAuth(req);
-    if (!authCheck.ok || !authCheck.uid) {
-      return res.status(401).json({ error: authCheck.error || 'Authenticated Firebase user required.' });
+    const authCheck = await verifyRequestAuth(req);
+    if (!authCheck.ok) {
+      return res.status(authCheck.status || 401).json({ error: authCheck.error || 'Authenticated Firebase user required.' });
     }
 
-    const { report, hotspot, blockchainRecord } = req.body || {};
-    if (!report?.id || typeof report.lat !== 'number' || typeof report.lng !== 'number') {
-      return res.status(400).json({ error: 'Valid report id and coordinates required.' });
+    const bodyReportId = req.body?.reportId || req.body?.report?.id;
+    const submissionRequestId = req.body?.submissionRequestId;
+    if (!bodyReportId || typeof bodyReportId !== 'string') {
+      return res.status(400).json({ error: 'Valid reportId is required.' });
     }
 
     try {
-      const db = getAdminFirestore(admin);
-      const batch = db.batch();
+      const reportRef = firestore.collection('reports').doc(bodyReportId);
+      const reportSnap = await reportRef.get();
+      if (!reportSnap.exists) {
+        return res.status(404).json({ error: `Report ${bodyReportId} not found in Firestore.` });
+      }
 
-      // Sanitized public report (strictly PII-free)
-      const publicRef = db.collection('public_reports').doc(report.id);
+      const reportData = reportSnap.data() as FloodReport;
+      if (authCheck.uid && reportData.reporterId !== authCheck.uid && authCheck.role !== 'officer') {
+        return res.status(403).json({ error: 'Forbidden: you do not own this flood report.' });
+      }
+
+      if (!validateCoordinates(reportData.lat, reportData.lng)) {
+        return res.status(400).json({ error: 'Stored report has invalid GPS coordinates.' });
+      }
+
+      // Idempotent fast-path if already synced under the same submissionRequestId
+      if (
+        reportData.publicSyncStatus === 'SYNCED' &&
+        submissionRequestId &&
+        reportData.submissionRequestId === submissionRequestId &&
+        reportData.hotspotId
+      ) {
+        const hsSnap = await firestore.collection('hotspots').doc(reportData.hotspotId).get();
+        return res.json({
+          ok: true,
+          idempotentHit: true,
+          syncedReportId: reportData.id,
+          hotspot: hsSnap.exists ? hsSnap.data() : null,
+          isDuplicate: Boolean(reportData.isDuplicate),
+          duplicateOfReportId: reportData.duplicateOfReportId || null,
+          publicReport: buildSanitizedPublicReport(reportData),
+        });
+      }
+
+      // Query recent reports (last 24h) via Admin SDK for cross-citizen duplicate detection & server clustering
+      const cutoff24hIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const recentSnap = await firestore
+        .collection('reports')
+        .where('timestamp', '>=', cutoff24hIso)
+        .get();
+
+      const otherReports: FloodReport[] = [];
+      recentSnap.docs.forEach((docSnap: any) => {
+        const d = docSnap.data() as FloodReport;
+        if (d.id && d.id !== reportData.id) {
+          otherReports.push(d);
+        }
+      });
+
+      // Server-authoritative cross-citizen duplicate detection
+      let isDuplicate = Boolean(reportData.isDuplicate);
+      let duplicateOfReportId = reportData.duplicateOfReportId;
+      for (const prior of otherReports) {
+        if (areReportsDuplicate(prior, reportData)) {
+          isDuplicate = true;
+          duplicateOfReportId = prior.id;
+          break;
+        }
+      }
+
+      const updatedTargetReport: FloodReport = {
+        ...reportData,
+        isDuplicate,
+        ...(duplicateOfReportId ? { duplicateOfReportId } : {}),
+      };
+
+      // Lookup cached 3h forecast rainfall for area clustering
+      const rainfallByArea: Record<string, number> = {};
+      const areaCacheKey = `${Number(reportData.lat).toFixed(2)},${Number(reportData.lng).toFixed(2)}`;
+      const areaWeather = weatherCache.get(areaCacheKey) || Array.from(weatherCache.values())[0];
+      if (
+        areaWeather &&
+        areaWeather.data?.isLive &&
+        areaWeather.data?.forecastAvailable &&
+        typeof areaWeather.data?.expected3hRainfallMm === 'number' &&
+        Number.isFinite(areaWeather.data.expected3hRainfallMm)
+      ) {
+        rainfallByArea['__default'] = areaWeather.data.expected3hRainfallMm;
+      }
+
+      const computedHotspots = clusterReports([updatedTargetReport, ...otherReports], undefined, rainfallByArea);
+      const matchedHotspot =
+        computedHotspots.find((h) => h.associatedReportIds.includes(updatedTargetReport.id)) ||
+        clusterReports([updatedTargetReport], undefined, rainfallByArea)[0];
+
+      updatedTargetReport.hotspotId = matchedHotspot.id;
+
+      // Sanitized public report (Zero PII + generalized coordinates to ~100m grid)
+      const sanitizedPublic = buildSanitizedPublicReport(updatedTargetReport);
+      const syncedAt = new Date().toISOString();
+
+      const batch = firestore.batch();
+      batch.set(firestore.collection('public_reports').doc(updatedTargetReport.id), sanitizedPublic, { merge: true });
+      for (const hs of computedHotspots) {
+        batch.set(firestore.collection('hotspots').doc(hs.id), hs, { merge: true });
+      }
       batch.set(
-        publicRef,
+        reportRef,
         {
-          id: report.id,
-          hotspotId: report.hotspotId || null,
-          location: String(report.location || '').slice(0, 160),
-          area: String(report.area || '').slice(0, 80),
-          lat: report.lat,
-          lng: report.lng,
-          timestamp: report.timestamp || new Date().toISOString(),
-          waterLevel: report.waterLevel || 'Moderate',
-          roadAccessibility: report.roadAccessibility || 'Partially Blocked',
-          floodType: report.floodType || 'Street Waterlogging',
-          riskLevel: report.riskLevel || 'LOW',
-          verificationStatus: report.verificationStatus || 'UNDER REVIEW',
-          incidentStatus: report.incidentStatus || 'Submitted',
-          isDuplicate: Boolean(report.isDuplicate),
+          hotspotId: matchedHotspot.id,
+          isDuplicate,
+          duplicateOfReportId: duplicateOfReportId || null,
+          publicSyncStatus: 'SYNCED',
+          publicSyncedAt: syncedAt,
         },
         { merge: true }
       );
 
-      if (hotspot?.id) {
-        batch.set(db.collection('hotspots').doc(hotspot.id), hotspot, { merge: true });
-      }
-
-      if (blockchainRecord?.eventId && (authCheck.role === 'officer' || authCheck.role === 'admin')) {
-        batch.set(db.collection('blockchain_records').doc(blockchainRecord.eventId), blockchainRecord, {
-          merge: true,
-        });
-      }
-
       await batch.commit();
-      return res.json({ ok: true, syncedReportId: report.id });
+
+      return res.json({
+        ok: true,
+        syncedReportId: updatedTargetReport.id,
+        hotspot: matchedHotspot,
+        isDuplicate,
+        duplicateOfReportId: duplicateOfReportId || null,
+        publicReport: sanitizedPublic,
+      });
     } catch (err: any) {
       console.error('Public sync error:', err?.message);
       return res.status(500).json({ ok: false, error: err?.message || 'Firestore Admin sync failed.' });

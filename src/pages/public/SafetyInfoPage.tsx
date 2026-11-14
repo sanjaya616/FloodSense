@@ -215,8 +215,8 @@ export const SafetyInfoPage: React.FC = () => {
             <li className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mt-1.5 shrink-0" />
               <span>
-                <strong>File a photo report:</strong> Submit road conditions on FloodSense to assist
-                the DMC dispatching pumping brigades.
+                <strong>File a photo report:</strong> Submit road conditions on FloodSense to alert
+                nearby commuters and support municipal drainage triage.
               </span>
             </li>
           </ul>

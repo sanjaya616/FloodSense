@@ -55,12 +55,15 @@ export const BlockchainRegistryPage: React.FC = () => {
 
   // Filtered records
   const filteredRecords = blockchainRecords.filter((rec) => {
+    const q = search.toLowerCase();
     return (
       !search ||
-      rec.eventId.toLowerCase().includes(search.toLowerCase()) ||
-      rec.hotspotId.toLowerCase().includes(search.toLowerCase()) ||
-      rec.location.toLowerCase().includes(search.toLowerCase()) ||
-      rec.txHash.toLowerCase().includes(search.toLowerCase())
+      rec.eventId.toLowerCase().includes(q) ||
+      rec.hotspotId.toLowerCase().includes(q) ||
+      rec.location.toLowerCase().includes(q) ||
+      rec.txHash.toLowerCase().includes(q) ||
+      (rec.recordHash && rec.recordHash.toLowerCase().includes(q)) ||
+      rec.payloadHash.toLowerCase().includes(q)
     );
   });
 
@@ -118,11 +121,16 @@ export const BlockchainRegistryPage: React.FC = () => {
       {/* Page Title & Subtitle */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
         <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-mono font-bold uppercase tracking-wider">
+              DEMONSTRATION LEDGER
+            </span>
+          </div>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
             Prototype Audit Hash-Chain &amp; Flood Event Registry
           </h2>
           <p className="text-sm text-slate-500">
-            Tamper-evident, SHA-256 linked audit trail of verified municipal flood events (Simulated Ledger).
+            Tamper-evident, SHA-256 linked audit trail of verified municipal flood events (Local Academic Prototype).
           </p>
         </div>
 
@@ -251,11 +259,11 @@ export const BlockchainRegistryPage: React.FC = () => {
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-slate-50/75 border-b border-slate-100 text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                  <th className="py-3 px-4">Event ID</th>
+                  <th className="py-3 px-4">Record ID</th>
                   <th className="py-3 px-4">Hotspot ID</th>
                   <th className="py-3 px-4">Location</th>
                   <th className="py-3 px-4">Severity</th>
-                  <th className="py-3 px-4">Transaction Hash</th>
+                  <th className="py-3 px-4">Current Record Hash</th>
                   <th className="py-3 px-4">Status</th>
                   <th className="py-3 px-4 text-right">Action</th>
                 </tr>
@@ -329,9 +337,9 @@ export const BlockchainRegistryPage: React.FC = () => {
             <div>
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
                 <FileCode className="w-4 h-4 text-cyan-600" />
-                <span>Transaction Inspector</span>
+                <span>Hash-Chain Inspector</span>
               </h3>
-              <p className="text-xs text-slate-500">Cryptographic audit proof parameters</p>
+              <p className="text-xs text-slate-500">Cryptographic SHA-256 audit parameters</p>
             </div>
             {selectedTx && (
               <span className="font-mono text-xs font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded">
@@ -343,9 +351,14 @@ export const BlockchainRegistryPage: React.FC = () => {
           {selectedTx ? (
             <div className="space-y-3.5 text-xs">
               <div>
-                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5 font-mono">
-                  Target Hotspot
-                </span>
+                <div className="flex items-center justify-between gap-2 mb-0.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 font-mono">
+                    Prototype Audit Record ID
+                  </span>
+                  <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                    DEMONSTRATION LEDGER
+                  </span>
+                </div>
                 <p className="font-bold text-slate-900 text-sm">{selectedTx.location}</p>
                 <div className="flex items-center gap-2 mt-1">
                   <span className="font-mono text-slate-500 font-bold">{selectedTx.hotspotId}</span>
@@ -355,17 +368,13 @@ export const BlockchainRegistryPage: React.FC = () => {
 
               {/* Block & Network details */}
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 font-mono space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 text-[11px]">Ledger Network:</span>
-                  <span className="font-bold text-slate-800">{selectedTx.network}</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 text-[11px]">Ledger Mode:</span>
+                  <span className="font-bold text-slate-800 text-right">{selectedTx.network}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500 text-[11px]">Block Height:</span>
                   <span className="font-bold text-cyan-700">#{selectedTx.blockNumber}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 text-[11px]">Validator Count:</span>
-                  <span className="font-bold text-slate-800">{selectedTx.validatorCount} Nodes</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500 text-[11px]">Timestamp:</span>
@@ -375,30 +384,18 @@ export const BlockchainRegistryPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Smart contract parameters */}
-              <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 font-mono text-[11px] space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Contract Address:</span>
-                  <span className="text-slate-800 truncate max-w-[140px]">{selectedTx.contractAddress || '0x742d... (Simulated)'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Chain ID:</span>
-                  <span className="text-slate-800">{selectedTx.chainId || 11155111} (Sepolia)</span>
-                </div>
-              </div>
-
-              {/* Transaction Hash with Copy Action */}
+              {/* Current Record Hash with Copy Action */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-[10px] uppercase font-bold text-slate-400 font-mono">
-                    Transaction Hash (Simulated)
+                    Current Record Hash (recordHash)
                   </span>
                   <button
                     type="button"
-                    onClick={() => handleCopy(selectedTx.txHash)}
+                    onClick={() => handleCopy(selectedTx.recordHash || selectedTx.txHash)}
                     className="text-[11px] font-semibold text-cyan-700 hover:text-cyan-800 flex items-center gap-1 font-sans"
                   >
-                    {copiedHash === selectedTx.txHash ? (
+                    {copiedHash === (selectedTx.recordHash || selectedTx.txHash) ? (
                       <>
                         <Check className="w-3.5 h-3.5 text-emerald-600" />
                         <span className="text-emerald-600">Copied</span>
@@ -412,11 +409,11 @@ export const BlockchainRegistryPage: React.FC = () => {
                   </button>
                 </div>
                 <p className="font-mono text-[11px] text-slate-800 bg-slate-100 p-2 rounded-lg break-all border border-slate-200">
-                  {selectedTx.txHash}
+                  {selectedTx.recordHash || selectedTx.txHash}
                 </p>
               </div>
 
-              {/* Merkle Root & Prev Hash Link */}
+              {/* Prev Hash Link */}
               <div>
                 <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1 font-mono">
                   Previous Block Hash (prevHash)
@@ -426,14 +423,27 @@ export const BlockchainRegistryPage: React.FC = () => {
                 </p>
               </div>
 
+              {/* Canonical Payload Digest */}
               <div>
                 <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1 font-mono">
-                  Payload Digest (SHA-256)
+                  Canonical Payload SHA-256 (payloadHash)
                 </span>
                 <p className="font-mono text-[11px] text-slate-600 bg-slate-50 p-2 rounded-lg break-all border border-slate-200">
                   {selectedTx.payloadHash}
                 </p>
               </div>
+
+              {/* Canonical JSON Payload */}
+              {selectedTx.canonicalPayload && (
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1 font-mono">
+                    Canonical JSON Payload (Zero PII)
+                  </span>
+                  <pre className="font-mono text-[10px] text-slate-700 bg-slate-50 p-2.5 rounded-lg border border-slate-200 overflow-x-auto whitespace-pre-wrap break-all">
+                    {JSON.stringify(selectedTx.canonicalPayload, null, 2)}
+                  </pre>
+                </div>
+              )}
 
               <button
                 type="button"

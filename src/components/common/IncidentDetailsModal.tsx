@@ -155,6 +155,11 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
               <span className="flex items-center gap-1 font-mono">
                 <Compass className="w-3.5 h-3.5 text-slate-400" />
                 {report.lat.toFixed(4)}° N, {report.lng.toFixed(4)}° E
+                {(report.isPublicRedacted || report.coordinatePrecision === 'APPROX_100M_GRID') && (
+                  <span className="text-[10px] text-cyan-700 font-sans font-semibold ml-1">
+                    (~100m Public Grid)
+                  </span>
+                )}
               </span>
               <span>·</span>
               <span className="flex items-center gap-1 font-mono">
@@ -235,7 +240,7 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
           <div className="grid grid-cols-3 gap-3">
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
               <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
-                Water Level
+                Citizen Reported Water Level
               </span>
               <span className="text-sm font-bold text-slate-800">{report.waterLevel}</span>
             </div>
@@ -394,7 +399,7 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
               <div className="flex items-center gap-2 text-slate-400 text-[11px]">
                 <Lock className="w-3.5 h-3.5 text-emerald-600" />
                 <span>
-                  Privacy Protected: Contributor contact details are restricted to authorized Disaster Management Officers.
+                  Privacy Protected: Contributor contact details are restricted to authorized municipal emergency officers (prototype workflow).
                 </span>
               </div>
             )}

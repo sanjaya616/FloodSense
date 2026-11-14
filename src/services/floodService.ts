@@ -59,7 +59,7 @@ export interface WeatherData {
   currentTempC: number;
   condition: string;
   currentRainfallMm: number;
-  expected3hRainfallMm: number;
+  expected3hRainfallMm: number | null;
   humidityPercent: number;
   windSpeedKmh: number;
   windDirection: string;
@@ -67,10 +67,14 @@ export interface WeatherData {
   source: string;
   provider?: string;
   forecastAvailable?: boolean;
+  forecastCompleteness?: 'COMPLETE' | 'INCOMPLETE' | 'UNAVAILABLE';
   forecastTimeRange?: string;
   rainfallUnit?: string;
   isLive: boolean;
   isUsingDemonstrationFallback?: boolean;
+  cached?: boolean;
+  fetchedAt?: string | null;
+  cacheExpiresAt?: string | null;
   status: string;
 }
 
@@ -143,7 +147,9 @@ class FloodService {
 
   public setMode(mode: DataSourceMode): void {
     this.mode = mode;
-    localStorage.setItem('floodsense_data_mode', mode);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem('floodsense_data_mode', mode);
+    }
   }
 
   public canUseFirebase(): boolean {
@@ -191,18 +197,25 @@ class FloodService {
           currentTempC: data.currentTempC ?? 28,
           condition: data.condition ?? 'Overcast',
           currentRainfallMm: data.currentRainfallMm ?? 0,
-          expected3hRainfallMm: data.expected3hRainfallMm ?? 0,
+          expected3hRainfallMm:
+            typeof data.expected3hRainfallMm === 'number' && Number.isFinite(data.expected3hRainfallMm)
+              ? data.expected3hRainfallMm
+              : null,
           humidityPercent: data.humidityPercent ?? 85,
           windSpeedKmh: data.windSpeedKmh ?? 15,
           windDirection: data.windDirection ?? 'SW',
           updatedAt: data.updatedAt ?? 'Live (Asia/Colombo)',
           source: data.source ?? 'Open-Meteo Forecast API',
           provider: data.provider ?? data.source ?? 'Open-Meteo Forecast API',
-          forecastAvailable: data.forecastAvailable ?? true,
+          forecastAvailable: Boolean(data.forecastAvailable),
+          forecastCompleteness: data.forecastCompleteness ?? (data.forecastAvailable ? 'COMPLETE' : 'UNAVAILABLE'),
           forecastTimeRange: data.forecastTimeRange ?? 'Asia/Colombo +3h',
           rainfallUnit: data.rainfallUnit ?? 'mm',
           isLive: !!data.isLive,
           isUsingDemonstrationFallback: Boolean(data.isUsingDemonstrationFallback ?? !data.isLive),
+          cached: Boolean(data.cached),
+          fetchedAt: data.fetchedAt ?? null,
+          cacheExpiresAt: data.cacheExpiresAt ?? null,
           status: data.status ?? 'Normal Conditions Monitoring',
         };
       }
@@ -211,12 +224,17 @@ class FloodService {
     }
     return {
       ...INITIAL_WEATHER_FORECAST,
+      expected3hRainfallMm: null,
       provider: INITIAL_WEATHER_FORECAST.source,
       forecastAvailable: false,
-      forecastTimeRange: 'Demonstration Snapshot',
+      forecastCompleteness: 'UNAVAILABLE',
+      forecastTimeRange: 'Demonstration Snapshot (Live Feed Unavailable)',
       rainfallUnit: 'mm',
       isLive: false,
       isUsingDemonstrationFallback: true,
+      cached: false,
+      fetchedAt: null,
+      cacheExpiresAt: null,
     };
   }
 
@@ -284,20 +302,50 @@ class FloodService {
   }
 
   // --- Reports ---
-  public async getReports(): Promise<FloodReport[]> {
+  public async getReports(options?: { role?: 'officer' | 'citizen'; uid?: string }): Promise<FloodReport[]> {
     if (this.mode === 'FIREBASE') {
-      if (isFirebaseConfigured() && db) {
-        if (!auth?.currentUser) {
-          // Public visitors read sanitized public_reports (zero PII)
-          const pubQ = query(collection(db, 'public_reports'), orderBy('timestamp', 'desc'));
-          const pubSnap = await getDocs(pubQ);
-          return pubSnap.docs.map((docSnap) => docSnap.data() as FloodReport);
-        }
-        const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'));
-        const snapshot = await getDocs(q);
+      if (!isFirebaseConfigured() || !db) {
+        throw new Error('Firebase Firestore is not configured in this environment.');
+      }
+      const activeUid = options?.uid || auth?.currentUser?.uid;
+      if (!activeUid) {
+        // Signed-out/public visitors read sanitized public_reports (zero PII)
+        const pubQ = query(collection(db, 'public_reports'), orderBy('timestamp', 'desc'));
+        const pubSnap = await getDocs(pubQ);
+        return pubSnap.docs.map((docSnap) => docSnap.data() as FloodReport);
+      }
+
+      const resolvedRole =
+        options?.role || (await this.getAuthoritativeFirebaseRole(auth?.currentUser));
+
+      if (resolvedRole === 'officer') {
+        const officerQ = query(collection(db, 'reports'), orderBy('timestamp', 'desc'));
+        const snapshot = await getDocs(officerQ);
         return snapshot.docs.map((docSnap) => docSnap.data() as FloodReport);
       }
-      return [];
+
+      // Citizens query strictly their own reports in /reports + public_reports separately
+      const citizenOwnQ = query(
+        collection(db, 'reports'),
+        where('reporterId', '==', activeUid),
+        orderBy('timestamp', 'desc')
+      );
+      const [ownSnap, pubSnap] = await Promise.all([
+        getDocs(citizenOwnQ),
+        getDocs(query(collection(db, 'public_reports'), orderBy('timestamp', 'desc'))),
+      ]);
+      const merged = new Map<string, FloodReport>();
+      pubSnap.docs.forEach((docSnap) => {
+        const d = docSnap.data() as FloodReport;
+        if (d.id) merged.set(d.id, d);
+      });
+      ownSnap.docs.forEach((docSnap) => {
+        const d = docSnap.data() as FloodReport;
+        if (d.id) merged.set(d.id, d);
+      });
+      return Array.from(merged.values()).sort(
+        (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)
+      );
     }
     return [...this.inMemoryReports];
   }
@@ -358,9 +406,9 @@ class FloodService {
         ? auth.currentUser.uid
         : reportInput.reporterId || 'citizen_demo_user';
 
-    // Duplicate check within 25m and 5 minutes
+    // Duplicate check within 25m and 5 minutes (local/own reports + citywide Admin check in Firebase mode)
     let duplicateOfId: string | undefined;
-    const isDuplicate = existingReports.some((existing) => {
+    let isDuplicate = existingReports.some((existing) => {
       const match = areReportsDuplicate(existing, {
         lat: reportInput.lat,
         lng: reportInput.lng,
@@ -369,6 +417,26 @@ class FloodService {
       if (match) duplicateOfId = existing.id;
       return match;
     });
+
+    if (!isDuplicate && this.mode === 'FIREBASE') {
+      try {
+        const headers = await this.getBearerHeaders();
+        const dupRes = await fetch('/api/reports/check-duplicate', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ lat: reportInput.lat, lng: reportInput.lng, timestamp }),
+        });
+        if (dupRes.ok) {
+          const dupJson = await dupRes.json();
+          if (dupJson.isDuplicate && dupJson.duplicateOfId) {
+            isDuplicate = true;
+            duplicateOfId = dupJson.duplicateOfId;
+          }
+        }
+      } catch {
+        // Server public-sync will also authoritatively check duplicates across all users
+      }
+    }
 
     // Resolve Base64 image for AI BEFORE or alongside upload (never send download URL as base64)
     let aiImagePayload = reportInput.customImage;
@@ -460,11 +528,13 @@ class FloodService {
       aiStatus: aiResult.aiStatus || 'NOT_RUN',
       aiVerificationDetails: aiResult,
       imageUrl: storedImageUrl,
+      ...(uploadedStoragePath ? { storagePath: uploadedStoragePath } : {}),
+      publicSyncStatus: this.mode === 'FIREBASE' ? 'PENDING' : 'SYNCED',
       isDuplicate,
       duplicateOfReportId: duplicateOfId,
     };
 
-    // Recluster with real area/forecast rainfall (without inventing 20mm fallback)
+    // Recluster using live forecast when available or honest area rainfall without stale/synthetic values
     const allReportsForClustering = [createdReport, ...existingReports];
     const rainfallByArea: Record<string, number> = {};
     this.inMemoryHotspots.forEach((h) => {
@@ -472,6 +542,21 @@ class FloodService {
         rainfallByArea[h.area] = h.forecastRainfallMm;
       }
     });
+    if (this.mode === 'FIREBASE') {
+      try {
+        const liveWeather = await this.fetchLiveWeather(reportInput.lat, reportInput.lng);
+        if (
+          liveWeather.isLive &&
+          liveWeather.forecastAvailable &&
+          typeof liveWeather.expected3hRainfallMm === 'number' &&
+          Number.isFinite(liveWeather.expected3hRainfallMm)
+        ) {
+          rainfallByArea['__default'] = liveWeather.expected3hRainfallMm;
+        }
+      } catch {
+        // Proceed honestly with MISSING rainfall source if weather fetch fails
+      }
+    }
 
     const updatedHotspots = clusterReports(
       allReportsForClustering,
@@ -480,13 +565,13 @@ class FloodService {
       this.riskThresholds
     );
 
-    const matchedHotspot =
+    let matchedHotspot =
       updatedHotspots.find((h) => h.associatedReportIds.includes(newId)) ||
       clusterReports([createdReport], this.clusteringConfig, rainfallByArea, this.riskThresholds)[0];
 
     createdReport.hotspotId = matchedHotspot.id;
 
-    // Anchor to prototype SHA-256 hash chain if high risk
+    // Anchor to prototype SHA-256 hash chain if high risk (DEMO mode or local chain)
     let createdBlockchainRecord: BlockchainRecord | undefined;
     if (matchedHotspot.riskLevel === 'HIGH') {
       const latestRecord = this.inMemoryBlockchain[0];
@@ -547,23 +632,37 @@ class FloodService {
           unread: true,
         });
 
-        // Trusted backend sync for public_reports, hotspots, and audit trail
+        // Trusted server-side public_reports + hotspot sync (ignores client risk/hotspot overrides)
         try {
           const headers = await this.getBearerHeaders();
           const syncRes = await fetch('/api/reports/public-sync', {
             method: 'POST',
             headers,
             body: JSON.stringify({
-              report: createdReport,
-              hotspot: matchedHotspot,
-              blockchainRecord: createdBlockchainRecord,
+              reportId: newId,
+              submissionRequestId: reportInput.submissionRequestId,
             }),
           });
-          if (!syncRes.ok && syncRes.status !== 501) {
-            console.warn('Backend public-sync returned non-OK status:', syncRes.status);
+          if (syncRes.ok) {
+            const syncData = await syncRes.json();
+            createdReport.publicSyncStatus = 'SYNCED';
+            if (syncData?.hotspot?.id) {
+              matchedHotspot = syncData.hotspot as FloodHotspot;
+              createdReport.hotspotId = matchedHotspot.id;
+            }
+            if (typeof syncData?.isDuplicate === 'boolean') {
+              createdReport.isDuplicate = syncData.isDuplicate;
+              createdReport.duplicateOfReportId = syncData.duplicateOfReportId || undefined;
+            }
+          } else {
+            const errJson = await syncRes.json().catch(() => null);
+            createdReport.publicSyncStatus = 'FAILED';
+            createdReport.publicSyncError =
+              errJson?.message || errJson?.error || `Server sync returned HTTP ${syncRes.status}`;
           }
-        } catch (syncErr) {
-          console.warn('Backend public-sync unavailable:', syncErr);
+        } catch (syncErr: any) {
+          createdReport.publicSyncStatus = 'FAILED';
+          createdReport.publicSyncError = syncErr?.message || 'Public map sync request failed.';
         }
       } catch (err: any) {
         // Clean up orphaned Storage upload on Firestore failure
@@ -577,9 +676,55 @@ class FloodService {
       report: createdReport,
       hotspot: matchedHotspot,
       blockchainRecord: createdBlockchainRecord,
-      isDuplicate,
-      duplicateOfId,
+      isDuplicate: createdReport.isDuplicate,
+      duplicateOfId: createdReport.duplicateOfReportId,
     };
+  }
+
+  // --- Retry Public Map Sync (Firebase Admin) ---
+  public async retryPublicSync(reportId: string): Promise<{
+    ok: boolean;
+    report?: FloodReport;
+    hotspot?: FloodHotspot;
+    error?: string;
+  }> {
+    if (this.mode !== 'FIREBASE') {
+      return { ok: true };
+    }
+    try {
+      const headers = await this.getBearerHeaders();
+      const syncRes = await fetch('/api/reports/public-sync', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ reportId }),
+      });
+      const data = await syncRes.json().catch(() => null);
+      if (!syncRes.ok) {
+        const errorMsg = data?.message || data?.error || `Public sync failed (HTTP ${syncRes.status})`;
+        return { ok: false, error: errorMsg };
+      }
+      const existing = this.inMemoryReports.find((r) => r.id === reportId);
+      const updatedReport: FloodReport | undefined = existing
+        ? {
+            ...existing,
+            publicSyncStatus: 'SYNCED',
+            publicSyncError: undefined,
+            hotspotId: data?.hotspot?.id || existing.hotspotId,
+            isDuplicate: typeof data?.isDuplicate === 'boolean' ? data.isDuplicate : existing.isDuplicate,
+            duplicateOfReportId: data?.duplicateOfReportId ?? existing.duplicateOfReportId,
+          }
+        : undefined;
+      if (updatedReport) {
+        this.inMemoryReports = this.inMemoryReports.map((r) => (r.id === reportId ? updatedReport : r));
+      }
+      return {
+        ok: true,
+        report: updatedReport,
+        hotspot: data?.hotspot as FloodHotspot | undefined,
+      };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || 'Failed to contact server public sync endpoint.' };
+    }
   }
 
   // --- Retry AI Verification ---
@@ -780,11 +925,31 @@ class FloodService {
   // --- Real-Time Firestore Synchronization ---
   public subscribeToReports(
     onUpdate: (reports: FloodReport[]) => void,
-    onError: (error: Error) => void
+    onError: (error: Error) => void,
+    options?: { role?: 'officer' | 'citizen'; uid?: string }
   ): Unsubscribe | null {
     if (this.mode !== 'FIREBASE' || !isFirebaseConfigured() || !db) return null;
-    const targetCol = auth?.currentUser ? 'reports' : 'public_reports';
-    const q = query(collection(db, targetCol), orderBy('timestamp', 'desc'));
+    const activeUid = options?.uid || auth?.currentUser?.uid;
+    if (!activeUid) {
+      const pubQ = query(collection(db, 'public_reports'), orderBy('timestamp', 'desc'));
+      return onSnapshot(
+        pubQ,
+        (snapshot) => {
+          onUpdate(snapshot.docs.map((d) => d.data() as FloodReport));
+        },
+        (err) => onError(err)
+      );
+    }
+
+    const q =
+      options?.role === 'officer'
+        ? query(collection(db, 'reports'), orderBy('timestamp', 'desc'))
+        : query(
+            collection(db, 'reports'),
+            where('reporterId', '==', activeUid),
+            orderBy('timestamp', 'desc')
+          );
+
     return onSnapshot(
       q,
       (snapshot) => {
@@ -853,19 +1018,50 @@ class FloodService {
     this.inMemoryHotspots = [...INITIAL_HOTSPOTS];
     this.inMemoryBlockchain = [...INITIAL_BLOCKCHAIN_RECORDS];
 
-    localStorage.removeItem('floodsense_reports_v2');
-    localStorage.removeItem('floodsense_hotspots_v2');
-    localStorage.removeItem('floodsense_blockchain_v2');
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem('floodsense_reports_v2');
+      window.localStorage.removeItem('floodsense_hotspots_v2');
+      window.localStorage.removeItem('floodsense_blockchain_v2');
+    }
 
     if (options?.resetSettings) {
       this.clusteringConfig = { ...DEFAULT_CLUSTERING_CONFIG };
       this.riskThresholds = { ...DEFAULT_RISK_THRESHOLDS };
-      localStorage.removeItem('floodsense_clustering_v2');
-      localStorage.removeItem('floodsense_thresholds_v2');
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem('floodsense_clustering_v2');
+        window.localStorage.removeItem('floodsense_thresholds_v2');
+      }
     }
   }
 
   // --- Auth & Authoritative Role Integration ---
+  public formatFirebaseAuthError(err: any): string {
+    const code = String(err?.code || '');
+    switch (code) {
+      case 'auth/operation-not-allowed':
+        return 'Email/Password sign-in is not yet enabled in Firebase Console (Authentication → Sign-in method). Enable Email/Password there or use Google Sign-In.';
+      case 'auth/invalid-credential':
+      case 'auth/wrong-password':
+      case 'auth/user-not-found':
+        return 'Invalid email or password. Please verify your credentials and try again.';
+      case 'auth/email-already-in-use':
+        return 'An account with this email address already exists. Please sign in instead.';
+      case 'auth/weak-password':
+        return 'Password is too weak. Please choose at least 6 characters.';
+      case 'auth/too-many-requests':
+        return 'Too many failed authentication attempts. Please wait a few minutes and try again.';
+      case 'auth/popup-closed-by-user':
+      case 'auth/cancelled-popup-request':
+        return 'Google sign-in popup was closed before completing authentication.';
+      case 'auth/popup-blocked':
+        return 'Sign-in popup was blocked by your browser. Please allow popups for this site and try again.';
+      case 'auth/network-request-failed':
+        return 'Network error contacting Firebase Authentication. Check your connection and retry.';
+      default:
+        return err?.message || 'Authentication failed. Please try again.';
+    }
+  }
+
   public async createCitizenUserProfileInFirestore(
     uid: string,
     name: string,
@@ -887,23 +1083,67 @@ class FloodService {
 
   public async updateUserProfileInFirestore(
     uid: string,
-    updates: { name?: string; phone?: string; department?: string; emergencySector?: string }
+    updates: {
+      name?: string;
+      phone?: string;
+      department?: string;
+      emergencySector?: string;
+      avatarUrl?: string;
+    } & Record<string, any>
   ): Promise<void> {
-    if (this.mode !== 'FIREBASE' || !isFirebaseConfigured() || !db || !uid) return;
-    await updateDoc(doc(db, 'users', uid), {
-      ...(updates.name ? { displayName: updates.name, name: updates.name } : {}),
-      ...(updates.phone !== undefined ? { phone: updates.phone } : {}),
-      ...(updates.department !== undefined ? { department: updates.department } : {}),
-      ...(updates.emergencySector !== undefined ? { emergencySector: updates.emergencySector } : {}),
-    });
+    if (this.mode !== 'FIREBASE' && !isFirebaseConfigured()) return;
+    if (!isFirebaseConfigured() || !db || !uid) {
+      throw new Error('Firebase Firestore user profile storage is not configured.');
+    }
+
+    const forbiddenKeys = [
+      'role',
+      'isOfficer',
+      'officer',
+      'admin',
+      'isAdmin',
+      'claims',
+      'customClaims',
+      'permissions',
+      'uid',
+      'email',
+    ];
+    for (const key of forbiddenKeys) {
+      if (key in updates && updates[key] !== undefined) {
+        throw new Error(`Forbidden: "${key}" cannot be modified via profile updates.`);
+      }
+    }
+
+    const sanitizedPayload: Record<string, any> = {};
+    if (typeof updates.name === 'string' && updates.name.trim()) {
+      const trimmed = updates.name.trim().slice(0, 120);
+      sanitizedPayload.displayName = trimmed;
+      sanitizedPayload.name = trimmed;
+    }
+    if (updates.phone !== undefined) {
+      sanitizedPayload.phone = String(updates.phone).trim().slice(0, 40);
+    }
+    if (updates.department !== undefined) {
+      sanitizedPayload.department = String(updates.department).trim().slice(0, 120);
+    }
+    if (updates.emergencySector !== undefined) {
+      sanitizedPayload.emergencySector = String(updates.emergencySector).trim().slice(0, 120);
+    }
+    if (typeof updates.avatarUrl === 'string' && updates.avatarUrl.trim()) {
+      sanitizedPayload.avatarUrl = updates.avatarUrl.trim().slice(0, 500);
+    }
+
+    if (Object.keys(sanitizedPayload).length === 0) return;
+
+    await updateDoc(doc(db, 'users', uid), sanitizedPayload);
   }
 
-  public async getAuthoritativeFirebaseRole(user: any): Promise<'officer' | 'citizen'> {
+  public async getAuthoritativeFirebaseRole(user: any, forceRefresh = true): Promise<'officer' | 'citizen'> {
     if (!user) return 'citizen';
     try {
       if (typeof user.getIdTokenResult === 'function') {
-        const tokenResult = await user.getIdTokenResult();
-        if (tokenResult?.claims?.role === 'officer' || tokenResult?.claims?.officer === true || tokenResult?.claims?.role === 'admin') {
+        const tokenResult = await user.getIdTokenResult(forceRefresh);
+        if (tokenResult?.claims?.role === 'officer' || tokenResult?.claims?.officer === true) {
           return 'officer';
         }
       }
@@ -912,13 +1152,6 @@ class FloodService {
         if (officerSnap.exists() && officerSnap.data()?.active !== false) {
           return 'officer';
         }
-        const userSnap = await getDoc(doc(db, 'users', user.uid));
-        if (userSnap.exists()) {
-          const data = userSnap.data();
-          if (data?.role === 'officer' || data?.isOfficer === true) {
-            return 'officer';
-          }
-        }
       }
     } catch (err) {
       console.warn('Authoritative role check fallback to citizen:', err);
@@ -926,12 +1159,92 @@ class FloodService {
     return 'citizen';
   }
 
+  /**
+   * Verifies a signed-in Firebase user against the backend Express / Firebase Admin endpoint.
+   * Never trusts client-side role state; sends a freshly minted Firebase ID token.
+   */
+  public async verifyOfficerWithBackend(user: any): Promise<{
+    authorized: boolean;
+    role: 'officer' | 'citizen';
+    verificationSource?: string;
+    error?: string;
+    status: number;
+  }> {
+    if (!user || typeof user.getIdToken !== 'function') {
+      return {
+        authorized: false,
+        role: 'citizen',
+        status: 401,
+        error: 'Authentication session missing. Please sign in with Firebase Authentication.',
+      };
+    }
+
+    try {
+      const idToken = await user.getIdToken(true);
+      const res = await fetch('/api/auth/verify-officer', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.authorized === true && data?.role === 'officer') {
+        return {
+          authorized: true,
+          role: 'officer',
+          verificationSource: data.verificationSource,
+          status: res.status,
+        };
+      }
+      return {
+        authorized: false,
+        role: 'citizen',
+        status: res.status,
+        error:
+          data?.error ||
+          'Access denied: this account is not pre-authorized as an Emergency Officer.',
+      };
+    } catch (err: any) {
+      return {
+        authorized: false,
+        role: 'citizen',
+        status: 500,
+        error: err?.message || 'Unable to verify Emergency Officer credentials with backend.',
+      };
+    }
+  }
+
+  public async fetchVerifiedSessionRole(user: any): Promise<'officer' | 'citizen'> {
+    if (!user || typeof user.getIdToken !== 'function') return 'citizen';
+    try {
+      const idToken = await user.getIdToken(false);
+      const res = await fetch('/api/auth/session', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+        },
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.authenticated && data?.role === 'officer') {
+          return 'officer';
+        }
+        return 'citizen';
+      }
+    } catch {
+      // Network fallback to client token claims check
+    }
+    return this.getAuthoritativeFirebaseRole(user, false);
+  }
+
   public async sendPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
     const cleanEmail = email.trim();
     if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       return { success: false, message: 'Please enter a valid email address.' };
     }
-    if (this.mode === 'FIREBASE' && isFirebaseConfigured() && auth) {
+    if (isFirebaseConfigured() && auth) {
       try {
         await sendPasswordResetEmail(auth, cleanEmail);
         return {
@@ -941,7 +1254,7 @@ class FloodService {
       } catch (err: any) {
         return {
           success: false,
-          message: err?.message || 'Unable to send password reset email.',
+          message: this.formatFirebaseAuthError(err),
         };
       }
     }
@@ -951,15 +1264,22 @@ class FloodService {
     };
   }
 
-  public async loginWithGoogle(): Promise<{ uid: string; email: string; displayName: string; role: 'officer' | 'citizen' } | null> {
+  public async loginWithGoogle(): Promise<{
+    uid: string;
+    email: string;
+    displayName: string;
+    role: 'officer' | 'citizen';
+    fbUser: any;
+  } | null> {
     if (isFirebaseConfigured() && auth) {
       const result = await signInWithPopup(auth, googleProvider);
-      const role = await this.getAuthoritativeFirebaseRole(result.user);
+      const role = await this.fetchVerifiedSessionRole(result.user);
       return {
         uid: result.user.uid,
         email: result.user.email || '',
         displayName: result.user.displayName || 'Authorized User',
         role,
+        fbUser: result.user,
       };
     }
     return null;

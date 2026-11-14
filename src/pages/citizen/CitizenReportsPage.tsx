@@ -24,11 +24,13 @@ import { RiskBadge } from '../../components/common/RiskBadge';
 import { FloodReport } from '../../utils/floodLogic';
 
 export const CitizenReportsPage: React.FC = () => {
-  const { myReports, retryAiVerification } = useFlood();
+  const { myReports, retryAiVerification, retryPublicSync } = useFlood();
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedReport, setSelectedReport] = useState<FloodReport | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [retryingSyncId, setRetryingSyncId] = useState<string | null>(null);
+  const [syncRetryError, setSyncRetryError] = useState<string | null>(null);
 
   const filteredReports = myReports.filter((r) => {
     const matchSearch =
@@ -101,6 +103,19 @@ export const CitizenReportsPage: React.FC = () => {
     }
   };
 
+  const handleRetryPublicSync = async (reportId: string) => {
+    setSyncRetryError(null);
+    setRetryingSyncId(reportId);
+    try {
+      const res = await retryPublicSync(reportId);
+      if (!res.ok) {
+        setSyncRetryError(res.error || 'Could not synchronize report with public flood map.');
+      }
+    } finally {
+      setRetryingSyncId(null);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6 font-sans">
       {/* Header */}
@@ -117,7 +132,7 @@ export const CitizenReportsPage: React.FC = () => {
             Track My Flood Reports
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Real-time status tracking from submission to DMC field response and road clearance.
+            Real-time status tracking from submission to municipal officer review and road clearance.
           </p>
         </div>
 
@@ -147,7 +162,7 @@ export const CitizenReportsPage: React.FC = () => {
           {[
             { id: 'ALL', label: 'All Reports' },
             { id: 'ACTIVE', label: 'Active Incidents' },
-            { id: 'VERIFIED', label: 'DMC Verified' },
+            { id: 'VERIFIED', label: 'Officer Verified' },
             { id: 'RESOLVED', label: 'Resolved' },
           ].map((tab) => (
             <button
@@ -165,6 +180,13 @@ export const CitizenReportsPage: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {syncRetryError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-800 flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+          <span>{syncRetryError}</span>
+        </div>
+      )}
 
       {/* Reports List */}
       <div className="space-y-4">
@@ -280,6 +302,29 @@ export const CitizenReportsPage: React.FC = () => {
                           'Please verify street landmark or attach a clearer daytime photograph.'}
                       </span>
                     </div>
+                  </div>
+                )}
+
+                {report.publicSyncStatus === 'FAILED' && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold block">Public Map Aggregation Pending Retry</span>
+                        <span className="text-[11px] text-amber-800">
+                          {report.publicSyncError || 'Your private report is safely stored in Firestore, but public hotspot sync failed.'}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={retryingSyncId === report.id}
+                      onClick={() => handleRetryPublicSync(report.id)}
+                      className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${retryingSyncId === report.id ? 'animate-spin' : ''}`} />
+                      <span>{retryingSyncId === report.id ? 'Syncing...' : 'Retry Public Sync'}</span>
+                    </button>
                   </div>
                 )}
 

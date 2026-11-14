@@ -31,7 +31,7 @@ import {
 import { FloodMap } from '../../components/map/FloodMap';
 
 export const CitizenReportWizardPage: React.FC = () => {
-  const { addReport, retryAiVerification, userProfile, hotspots } = useFlood();
+  const { addReport, retryAiVerification, retryPublicSync, userProfile, hotspots } = useFlood();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Wizard current step: 1 (Photo) -> 2 (Location) -> 3 (Severity) -> 4 (Review) -> 5 (Result)
@@ -71,6 +71,7 @@ export const CitizenReportWizardPage: React.FC = () => {
   // Step 5: Submission, Upload Progress & AI Result
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRetryingAi, setIsRetryingAi] = useState(false);
+  const [isRetryingPublicSync, setIsRetryingPublicSync] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submissionResult, setSubmissionResult] = useState<{
@@ -83,6 +84,8 @@ export const CitizenReportWizardPage: React.FC = () => {
     status: string;
     isDuplicate?: boolean;
     duplicateOfId?: string;
+    publicSyncStatus?: 'PENDING' | 'SYNCED' | 'FAILED';
+    publicSyncError?: string;
   } | null>(null);
 
   const parsedLat = Number.parseFloat(latInput);
@@ -260,11 +263,32 @@ export const CitizenReportWizardPage: React.FC = () => {
         status: result.report.incidentStatus,
         isDuplicate: result.isDuplicate,
         duplicateOfId: result.duplicateOfId,
+        publicSyncStatus: result.report.publicSyncStatus,
+        publicSyncError: result.report.publicSyncError,
       });
     } catch (err: any) {
       setSubmitError(err?.message || 'Report submission failed.');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleRetryPublicSync = async () => {
+    if (!submissionResult) return;
+    setIsRetryingPublicSync(true);
+    try {
+      const res = await retryPublicSync(submissionResult.reportId);
+      setSubmissionResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              publicSyncStatus: res.ok ? 'SYNCED' : 'FAILED',
+              publicSyncError: res.ok ? undefined : res.error || 'Public map sync failed.',
+            }
+          : prev
+      );
+    } finally {
+      setIsRetryingPublicSync(false);
     }
   };
 
@@ -338,7 +362,7 @@ export const CitizenReportWizardPage: React.FC = () => {
           Flood Incident Reporting Wizard
         </h1>
         <p className="text-xs sm:text-sm text-slate-500 mt-1">
-          Submit photo evidence and GPS coordinates to assist DMC drainage and rescue teams.
+          Submit photo evidence and GPS coordinates to assist municipal drainage and response teams (prototype workflow).
         </p>
       </div>
 
@@ -1035,13 +1059,37 @@ export const CitizenReportWizardPage: React.FC = () => {
                     Report {submissionResult.reportId} Successfully Saved!
                   </h3>
                   <p className="text-xs text-emerald-800 mt-0.5">
-                    Your report has been registered and forwarded to the DMC Operations Center (Cluster{' '}
+                    Your report has been registered and forwarded to the Municipal Operations Queue (Cluster{' '}
                     {submissionResult.hotspotId}).
                     {submissionResult.isDuplicate &&
                       ` Note: Flagged as duplicate of ${submissionResult.duplicateOfId}; evidence preserved.`}
                   </p>
                 </div>
               </div>
+
+              {submissionResult.publicSyncStatus === 'FAILED' && (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block">Public Map Aggregation Pending Sync</span>
+                      <span className="text-amber-800">
+                        {submissionResult.publicSyncError ||
+                          'Your private report is safely saved, but public hotspot publishing failed.'}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isRetryingPublicSync}
+                    onClick={handleRetryPublicSync}
+                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs flex items-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRetryingPublicSync ? 'animate-spin' : ''}`} />
+                    <span>{isRetryingPublicSync ? 'Retrying Sync...' : 'Retry Public Map Sync'}</span>
+                  </button>
+                </div>
+              )}
 
               {/* AI Verification Breakdown Card */}
               <div
@@ -1111,7 +1159,7 @@ export const CitizenReportWizardPage: React.FC = () => {
                   <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
                   <span>
                     Status is currently <strong>{submissionResult.status}</strong>. Official
-                    verification requires authorized DMC officer confirmation.
+                    verification requires authorized municipal officer confirmation.
                   </span>
                 </div>
               </div>

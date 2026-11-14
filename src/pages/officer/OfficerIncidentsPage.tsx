@@ -763,7 +763,9 @@ export const OfficerIncidentsPage: React.FC = () => {
                     <div>
                       <span className="text-[10px] text-cyan-800 uppercase block">3h Forecast</span>
                       <span className="font-bold font-mono text-slate-900">
-                        {weather.expected3hRainfallMm} mm
+                        {weather.expected3hRainfallMm !== null
+                          ? `${weather.expected3hRainfallMm} mm`
+                          : 'Unavailable'}
                       </span>
                     </div>
                   </div>

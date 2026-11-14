@@ -86,10 +86,22 @@ export const MethodologyPage: React.FC = () => {
                 <td className="py-2.5 px-3 text-cyan-700">Academic Model</td>
               </tr>
               <tr>
-                <td className="py-2.5 px-3 font-bold text-slate-800">Blockchain Records</td>
-                <td className="py-2.5 px-3 text-amber-700 font-bold">SYNTHETIC SIMULATION</td>
-                <td className="py-2.5 px-3 text-slate-600 font-sans">Deterministic SHA-256 hashes demonstrating Sepolia smart contract architecture</td>
-                <td className="py-2.5 px-3 text-amber-700">Simulated Ledger</td>
+                <td className="py-2.5 px-3 font-bold text-slate-800">Cloud Persistence &amp; Auth</td>
+                <td className="py-2.5 px-3 text-emerald-700 font-bold">PRIMARY CLOUD STACK</td>
+                <td className="py-2.5 px-3 text-slate-600 font-sans">Firebase Authentication, Cloud Firestore, Firebase Storage + Admin SDK server sync</td>
+                <td className="py-2.5 px-3 text-emerald-600">Live Cloud / Demo Toggle</td>
+              </tr>
+              <tr>
+                <td className="py-2.5 px-3 font-bold text-slate-800">Big Data &amp; Analytics Layer</td>
+                <td className="py-2.5 px-3 text-slate-700 font-bold">PROTOTYPE AGGREGATION</td>
+                <td className="py-2.5 px-3 text-slate-600 font-sans">Haversine temporal window clustering &amp; Recharts telemetry (small/medium dataset scale)</td>
+                <td className="py-2.5 px-3 text-cyan-700">Academic Prototype</td>
+              </tr>
+              <tr>
+                <td className="py-2.5 px-3 font-bold text-slate-800">Audit Hash-Chain</td>
+                <td className="py-2.5 px-3 text-amber-700 font-bold">PROTOTYPE SIMULATION</td>
+                <td className="py-2.5 px-3 text-slate-600 font-sans">Local SHA-256 chained digests across canonical JSON payloads (no public RPC)</td>
+                <td className="py-2.5 px-3 text-amber-700">Simulated Audit Chain</td>
               </tr>
               <tr>
                 <td className="py-2.5 px-3 font-bold text-slate-800">Baseline Colombo Incidents</td>
@@ -99,6 +111,37 @@ export const MethodologyPage: React.FC = () => {
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* 9-Step End-to-End Architecture Pipeline */}
+      <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs space-y-3">
+        <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+          <Layers className="w-4 h-4 text-cyan-700" />
+          <span>End-to-End System Architecture Pipeline (9 Stages)</span>
+        </h3>
+        <p className="text-xs text-slate-500">
+          Primary Emerging Technologies implemented end-to-end are Multimodal AI (<code>gemini-4-hydrogen</code>) and Cloud Computing (Firebase Auth, Firestore, Storage, and Express Admin sync), paired with academic prototypes for Big Data aggregation and SHA-256 audit chaining.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-xs">
+          {[
+            '1. Citizen Report (Photo + GPS Pin)',
+            '2. AI Assessment (Gemini 4 Hydrogen)',
+            '3. Cloud Storage (Firestore + Storage)',
+            '4. Spatial-Temporal Clustering (500m / 2h)',
+            '5. Weather-Based Risk Assessment (Open-Meteo)',
+            '6. Officer Review (Server-Enforced RBAC)',
+            '7. Citizen Alert & Public Map (100m Grid)',
+            '8. Analytics (Windowed Aggregations)',
+            '9. Audit Record (SHA-256 Hash-Chain)',
+          ].map((step) => (
+            <div
+              key={step}
+              className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 font-semibold text-slate-800"
+            >
+              {step}
+            </div>
+          ))}
         </div>
       </div>
 
@@ -204,6 +247,28 @@ export const MethodologyPage: React.FC = () => {
             This is a local simulated prototype chain (not connected to a live public mainnet/testnet RPC). Photographs and citizen PII are never
             written into hashed ledger payloads. Any post-hoc modification breaks cryptographic chain verification inside the inspector.
           </p>
+        </div>
+
+        {/* Chapter 6: Academic Limitations & Future Work */}
+        <div className="bg-amber-50/70 p-5 rounded-2xl border border-amber-200/90 shadow-xs space-y-2 text-xs text-amber-950">
+          <div className="flex items-center gap-2 font-bold text-sm">
+            <AlertTriangle className="w-4 h-4 text-amber-700" />
+            <h4>Academic Limitations &amp; Future Engineering Work</h4>
+          </div>
+          <ul className="list-disc pl-5 space-y-1 text-amber-900 leading-relaxed">
+            <li>
+              <strong>Prototype Emergency Operations Workflow:</strong> Officer triage dashboards and role workflows demonstrate a proposed municipal operations interface; FloodSense is not an officially deployed government or DMC system.
+            </li>
+            <li>
+              <strong>Hydrological Calibration &amp; Rule Heuristics:</strong> Deterministic rainfall/report count thresholds do not incorporate DEM terrain elevation, soil saturation, canal bathymetry, or drainage pump flow telemetry.
+            </li>
+            <li>
+              <strong>Dataset Scale:</strong> Analytics charts run client-side over demonstration and small-to-medium Firestore collections rather than a distributed streaming warehouse (e.g., BigQuery/Spark).
+            </li>
+            <li>
+              <strong>Audit Chain Immutability:</strong> While SHA-256 digests are cryptographically valid, public decentralized finality would require anchoring Merkle roots to an external immutable ledger or WORM storage bucket.
+            </li>
+          </ul>
         </div>
       </div>
     </div>

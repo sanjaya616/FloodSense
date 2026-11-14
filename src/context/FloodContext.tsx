@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   FloodReport,
   FloodHotspot,
@@ -51,8 +51,8 @@ export interface UserProfile {
 
 export const DEMO_OFFICER_PROFILE: UserProfile = {
   name: 'Kasun Pereira',
-  roleName: 'Emergency Management Officer',
-  department: 'Disaster Management Centre (DMC) - Western Province',
+  roleName: 'Emergency Management Officer (Prototype)',
+  department: 'Colombo Municipal Flood Operations (Academic Prototype)',
   email: 'officer@dmc.gov.lk',
   phone: '+94 11 213 6136',
   avatarUrl: FLOOD_IMAGES.officerAvatar,
@@ -101,6 +101,8 @@ export interface NotificationItem {
   severity: 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
   deliveryChannel: 'in-app' | 'simulated-sms' | 'push';
   reportId?: string;
+  recipientUid?: string;
+  recipientEmail?: string;
 }
 
 export interface DbOperationStatus {
@@ -133,7 +135,8 @@ export interface FloodContextType {
   isAuthLoading: boolean;
   userProfile: UserProfile;
   setUserProfile: React.Dispatch<React.SetStateAction<UserProfile>>;
-  updateUserProfile: (updates: Partial<UserProfile>) => void;
+  updateUserProfile: (updates: Partial<UserProfile>) => Promise<{ success: boolean; error?: string }>;
+  retryPublicSync: (reportId: string) => Promise<{ ok: boolean; error?: string }>;
   isAuthenticated: boolean;
   setIsAuthenticated: (auth: boolean) => void;
   switchPersona: (persona: 'officer' | 'citizen') => void;
@@ -142,6 +145,12 @@ export interface FloodContextType {
     password: string,
     rememberMe?: boolean
   ) => Promise<{ success: boolean; role: 'officer' | 'citizen'; message?: string }>;
+  loginWithOfficerEmail: (
+    email: string,
+    password: string,
+    rememberMe?: boolean
+  ) => Promise<{ success: boolean; role: 'officer' | 'citizen'; message?: string }>;
+  loginWithOfficerGoogle: () => Promise<{ success: boolean; role: 'officer' | 'citizen'; message?: string }>;
   registerWithEmail: (
     name: string,
     email: string,
@@ -352,8 +361,10 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return INITIAL_BLOCKCHAIN_RECORDS;
   });
 
+  const verifyingOfficerRef = useRef<boolean>(false);
+
   const initialSessionAccount = (() => {
-    if (dataSourceMode === 'FIREBASE' && isFirebaseConfigured()) return null;
+    if (isFirebaseConfigured() || dataSourceMode === 'FIREBASE') return null;
     try {
       const sessionEmail =
         sessionStorage.getItem(SESSION_KEY_AUTH_EMAIL) ||
@@ -369,7 +380,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   })();
 
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(
-    () => dataSourceMode === 'FIREBASE' && isFirebaseConfigured() && Boolean(auth)
+    () => isFirebaseConfigured() && Boolean(auth)
   );
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => Boolean(initialSessionAccount));
   const [authenticatedRole, setAuthenticatedRole] = useState<'officer' | 'citizen' | null>(
@@ -400,8 +411,11 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
     if (auth && isFirebaseConfigured()) {
       const unsubscribe = onAuthStateChanged(auth, async (user) => {
+        if (verifyingOfficerRef.current) {
+          return;
+        }
         if (user) {
-          const authRole = await floodService.getAuthoritativeFirebaseRole(user);
+          const authRole = await floodService.fetchVerifiedSessionRole(user);
           let storedUserData: any = null;
           if (db) {
             try {
@@ -415,16 +429,27 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setUserProfile((prev) => ({
             ...prev,
             uid: user.uid,
-            name: storedUserData?.displayName || storedUserData?.name || user.displayName || (authRole === 'officer' ? 'DMC Officer' : 'Citizen Reporter'),
+            name:
+              storedUserData?.displayName ||
+              storedUserData?.name ||
+              user.displayName ||
+              (authRole === 'officer' ? 'Municipal Officer' : 'Citizen Reporter'),
             email: user.email || prev.email,
             phone: storedUserData?.phone || user.phoneNumber || '',
-            department: storedUserData?.department || (authRole === 'officer' ? 'Disaster Management Centre (DMC)' : 'Colombo Community Sentinel'),
-            emergencySector: storedUserData?.emergencySector || (authRole === 'officer' ? 'Sector 04 — Colombo Municipal Basin' : 'Western Province Sentinel'),
+            department:
+              storedUserData?.department ||
+              (authRole === 'officer' ? 'Municipal Flood Operations' : 'Colombo Community Sentinel'),
+            emergencySector:
+              storedUserData?.emergencySector ||
+              (authRole === 'officer' ? 'Sector 04 — Colombo Municipal Basin' : 'Western Province Sentinel'),
             avatarUrl: user.photoURL || prev.avatarUrl,
-            roleName: authRole === 'officer' ? 'Emergency Management Officer' : 'Citizen Reporter & Resident',
+            roleName:
+              authRole === 'officer'
+                ? 'Emergency Management Officer'
+                : 'Citizen Reporter & Resident',
             isFirebaseUser: true,
           }));
-        } else if (dataSourceMode === 'FIREBASE') {
+        } else {
           setIsAuthenticated(false);
           setAuthenticatedRole(null);
           setRoleState('citizen');
@@ -485,10 +510,14 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Synchronize reports/hotspots/blockchain with Cloud Firestore when in FIREBASE mode
   useEffect(() => {
     if (dataSourceMode === 'FIREBASE') {
+      if (isAuthLoading) return;
+      const effectiveRole = isFirebaseConfigured() ? authenticatedRole || 'citizen' : authenticatedRole || role;
+      const effectiveUid = userProfile.uid;
+
       setDbOperationStatus({ loading: true, error: null, success: null });
 
       Promise.all([
-        floodService.getReports(),
+        floodService.getReports({ role: effectiveRole, uid: effectiveUid }),
         floodService.getHotspots(),
         floodService.getBlockchainRecords(),
       ])
@@ -512,7 +541,8 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       const unsubReports = floodService.subscribeToReports(
         (updatedReports) => setReports(updatedReports),
-        (err) => console.warn('Real-time reports listener error:', err.message)
+        (err) => console.warn('Real-time reports listener error:', err.message),
+        { role: effectiveRole, uid: effectiveUid }
       );
 
       const unsubHotspots = floodService.subscribeToHotspots(
@@ -538,7 +568,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setBlockchainRecords(INITIAL_BLOCKCHAIN_RECORDS);
       }
     }
-  }, [dataSourceMode, isAuthenticated]);
+  }, [dataSourceMode, isAuthenticated, isAuthLoading, authenticatedRole, role, userProfile.uid]);
 
   const refreshWeather = useCallback(async () => {
     const live = await floodService.fetchLiveWeather();
@@ -547,7 +577,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   useEffect(() => {
     refreshWeather();
-    const interval = setInterval(refreshWeather, 60000);
+    const interval = setInterval(refreshWeather, 300000);
     return () => clearInterval(interval);
   }, [refreshWeather]);
 
@@ -595,9 +625,9 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     floodService.setRiskThresholds(riskThresholds);
   }, [riskThresholds]);
 
-  // UI preview role switcher (disabled for escalation in FIREBASE mode)
+  // UI preview role switcher (strictly disabled for escalation when Firebase Auth is active)
   const setRole = (newRole: 'officer' | 'citizen') => {
-    if (dataSourceMode === 'FIREBASE' && newRole === 'officer' && authenticatedRole !== 'officer') {
+    if ((isFirebaseConfigured() || dataSourceMode === 'FIREBASE') && newRole === 'officer' && authenticatedRole !== 'officer') {
       return;
     }
     setRoleState(newRole);
@@ -606,21 +636,68 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } catch {}
   };
 
-  const updateUserProfile = (updates: Partial<UserProfile>) => {
-    setUserProfile((prev) => {
-      const updated = { ...prev, ...updates };
-      if (dataSourceMode === 'FIREBASE' && updated.uid) {
-        floodService.updateUserProfileInFirestore(updated.uid, updates).catch(() => {});
+  const updateUserProfile = async (
+    updates: Partial<UserProfile>
+  ): Promise<{ success: boolean; error?: string }> => {
+    const rawKeys = Object.keys(updates || {});
+    const forbiddenKeys = [
+      'role',
+      'isOfficer',
+      'officer',
+      'admin',
+      'isAdmin',
+      'claims',
+      'customClaims',
+      'permissions',
+      'uid',
+      'email',
+      'isFirebaseUser',
+    ];
+    if (rawKeys.some((k) => forbiddenKeys.includes(k) && (updates as Record<string, any>)[k] !== undefined)) {
+      return {
+        success: false,
+        error: 'Forbidden: Role or identity privilege fields cannot be modified through profile updates.',
+      };
+    }
+
+    const safeUpdates: Partial<UserProfile> = {
+      ...(typeof updates.name === 'string' && updates.name.trim() ? { name: updates.name.trim().slice(0, 120) } : {}),
+      ...(updates.phone !== undefined ? { phone: String(updates.phone).trim().slice(0, 40) } : {}),
+      ...(updates.department !== undefined ? { department: String(updates.department).trim().slice(0, 120) } : {}),
+      ...(updates.emergencySector !== undefined
+        ? { emergencySector: String(updates.emergencySector).trim().slice(0, 120) }
+        : {}),
+      ...(typeof updates.avatarUrl === 'string' && updates.avatarUrl.trim()
+        ? { avatarUrl: updates.avatarUrl.trim().slice(0, 500) }
+        : {}),
+    };
+
+    const nextProfile = { ...userProfile, ...safeUpdates };
+    if (dataSourceMode === 'FIREBASE' || isFirebaseConfigured()) {
+      if (!nextProfile.uid) {
+        return { success: false, error: 'Missing authenticated Firebase user ID.' };
       }
-      setDemoAccounts((accounts) =>
-        accounts.map((acc) =>
-          acc.email.toLowerCase() === prev.email.toLowerCase()
-            ? { ...acc, profile: { ...acc.profile, ...updates } }
-            : acc
-        )
-      );
-      return updated;
-    });
+      try {
+        await floodService.updateUserProfileInFirestore(nextProfile.uid, safeUpdates);
+      } catch (err: any) {
+        const msg = err?.message || 'Failed to update profile in Cloud Firestore.';
+        setDbOperationStatus({ loading: false, error: msg, success: null });
+        return { success: false, error: msg };
+      }
+    }
+
+    setUserProfile(nextProfile);
+    setDemoAccounts((accounts) =>
+      accounts.map((acc) =>
+        acc.email.toLowerCase() === userProfile.email.toLowerCase()
+          ? { ...acc, profile: { ...acc.profile, ...safeUpdates } }
+          : acc
+      )
+    );
+    try {
+      localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(nextProfile));
+    } catch {}
+    return { success: true };
   };
 
   const setDataSourceMode = (mode: DataSourceMode) => {
@@ -643,7 +720,11 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         rainfallByArea[h.area] = h.forecastRainfallMm;
       }
     });
-    if (weather.isLive && Number.isFinite(weather.expected3hRainfallMm)) {
+    if (
+      weather.isLive &&
+      weather.expected3hRainfallMm !== null &&
+      Number.isFinite(weather.expected3hRainfallMm)
+    ) {
       rainfallByArea['__default'] = weather.expected3hRainfallMm;
     }
 
@@ -698,12 +779,13 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return false;
   });
 
-  // Strictly blocked from granting Officer privileges when in Live FIREBASE mode
+  // Strictly blocked from granting Officer privileges when Firebase Auth or Live mode is active
   const switchPersona = (persona: 'officer' | 'citizen') => {
-    if (dataSourceMode === 'FIREBASE' && persona === 'officer') {
+    if ((isFirebaseConfigured() || dataSourceMode === 'FIREBASE') && persona === 'officer') {
       setDbOperationStatus({
         loading: false,
-        error: 'Client persona escalation is disabled in Live Firebase mode. Sign in with an authorized Officer account.',
+        error:
+          'Client role switching cannot grant Emergency Officer access. Sign in via Emergency Officer Login with a pre-authorized account.',
         success: null,
       });
       return;
@@ -718,6 +800,47 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       sessionStorage.setItem(SESSION_KEY_AUTH_EMAIL, targetAccount.email);
       localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(targetAccount.profile));
     } catch {}
+  };
+
+  const buildProfileFromFirebaseUser = async (
+    fbUser: any,
+    authoritativeRole: 'officer' | 'citizen'
+  ): Promise<UserProfile> => {
+    let storedUserData: any = null;
+    if (db && fbUser?.uid) {
+      try {
+        const snap = await getDoc(doc(db, 'users', fbUser.uid));
+        if (snap.exists()) storedUserData = snap.data();
+      } catch {}
+    }
+    return {
+      uid: fbUser.uid,
+      name:
+        storedUserData?.displayName ||
+        storedUserData?.name ||
+        fbUser.displayName ||
+        (authoritativeRole === 'officer' ? 'Municipal Officer' : 'Citizen Reporter'),
+      roleName:
+        authoritativeRole === 'officer'
+          ? 'Emergency Management Officer'
+          : 'Citizen Reporter & Resident',
+      department:
+        storedUserData?.department ||
+        (authoritativeRole === 'officer' ? 'Municipal Flood Operations' : 'Colombo Metro Community'),
+      email: fbUser.email || '',
+      phone: storedUserData?.phone || fbUser.phoneNumber || '',
+      avatarUrl:
+        fbUser.photoURL ||
+        (authoritativeRole === 'officer'
+          ? FLOOD_IMAGES.officerAvatar
+          : 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=256'),
+      emergencySector:
+        storedUserData?.emergencySector ||
+        (authoritativeRole === 'officer'
+          ? 'Sector 04 — Colombo Municipal Basin'
+          : 'Western Province Sentinel'),
+      isFirebaseUser: true,
+    };
   };
 
   const loginWithEmail = async (email: string, password: string, rememberMe = false) => {
@@ -737,29 +860,15 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
     try {
-      if (dataSourceMode === 'FIREBASE' && isFirebaseConfigured() && auth) {
+      if (isFirebaseConfigured() && auth) {
         await setPersistence(
           auth,
           rememberMe ? browserLocalPersistence : browserSessionPersistence
         );
         const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
         const fbUser = userCredential.user;
-        const authoritativeRole = await floodService.getAuthoritativeFirebaseRole(fbUser);
-
-        const profile: UserProfile = {
-          uid: fbUser.uid,
-          name: fbUser.displayName || (authoritativeRole === 'officer' ? 'DMC Officer' : 'Citizen Reporter'),
-          roleName: authoritativeRole === 'officer' ? 'Emergency Management Officer' : 'Citizen Reporter & Resident',
-          department: authoritativeRole === 'officer' ? 'Disaster Management Centre (DMC)' : 'Colombo Metro Community',
-          email: fbUser.email || email.trim(),
-          phone: fbUser.phoneNumber || '',
-          avatarUrl:
-            authoritativeRole === 'officer'
-              ? FLOOD_IMAGES.officerAvatar
-              : 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=256',
-          emergencySector: authoritativeRole === 'officer' ? 'Sector 04 — Colombo Municipal Basin' : 'Western Province Sentinel',
-          isFirebaseUser: true,
-        };
+        const authoritativeRole = await floodService.fetchVerifiedSessionRole(fbUser);
+        const profile = await buildProfileFromFirebaseUser(fbUser, authoritativeRole);
 
         setUserProfile(profile);
         setAuthenticatedRole(authoritativeRole);
@@ -773,7 +882,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return { success: true, role: authoritativeRole };
       }
 
-      // Demonstration Mode Credential Validation (hash comparison)
+      // Non-Firebase fallback (only when Firebase is not configured)
       const matchedAccount = demoAccounts.find(
         (acc) => acc.email.toLowerCase() === normalizedEmail
       );
@@ -811,9 +920,150 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
       return { success: true, role: matchedAccount.role };
     } catch (err: any) {
-      const msg = err?.message || 'Authentication failed. Please verify credentials.';
+      const msg = floodService.formatFirebaseAuthError(err);
       setDbOperationStatus({ loading: false, error: msg, success: null });
       return { success: false, role: 'citizen' as const, message: msg };
+    }
+  };
+
+  const loginWithOfficerEmail = async (email: string, password: string, rememberMe = false) => {
+    setDbOperationStatus({ loading: true, error: null, success: null });
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      const msg = 'Please enter a valid officer email address.';
+      setDbOperationStatus({ loading: false, error: msg, success: null });
+      return { success: false, role: 'citizen' as const, message: msg };
+    }
+
+    if (!password) {
+      const msg = 'Please enter your password.';
+      setDbOperationStatus({ loading: false, error: msg, success: null });
+      return { success: false, role: 'citizen' as const, message: msg };
+    }
+
+    if (isFirebaseConfigured() && auth) {
+      verifyingOfficerRef.current = true;
+      try {
+        await setPersistence(
+          auth,
+          rememberMe ? browserLocalPersistence : browserSessionPersistence
+        );
+        const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
+        const fbUser = userCredential.user;
+        const verifyRes = await floodService.verifyOfficerWithBackend(fbUser);
+
+        if (!verifyRes.authorized || verifyRes.role !== 'officer') {
+          await floodService.logout();
+          setIsAuthenticated(false);
+          setAuthenticatedRole(null);
+          setRoleState('citizen');
+          const deniedMsg =
+            verifyRes.error ||
+            'Access denied: this account is not pre-authorized as an Emergency Officer.';
+          setDbOperationStatus({ loading: false, error: deniedMsg, success: null });
+          return { success: false, role: 'citizen' as const, message: deniedMsg };
+        }
+
+        const profile = await buildProfileFromFirebaseUser(fbUser, 'officer');
+        setUserProfile(profile);
+        setAuthenticatedRole('officer');
+        setRoleState('officer');
+        setIsAuthenticated(true);
+        setDbOperationStatus({
+          loading: false,
+          error: null,
+          success: 'Emergency Officer credentials verified. Opening Operations Center.',
+        });
+        return { success: true, role: 'officer' as const };
+      } catch (err: any) {
+        const msg = floodService.formatFirebaseAuthError(err);
+        setDbOperationStatus({ loading: false, error: msg, success: null });
+        return { success: false, role: 'citizen' as const, message: msg };
+      } finally {
+        verifyingOfficerRef.current = false;
+      }
+    }
+
+    // Non-Firebase fallback (only when Firebase is not configured)
+    const matchedOfficer = demoAccounts.find(
+      (acc) => acc.email.toLowerCase() === normalizedEmail && acc.role === 'officer'
+    );
+    if (!matchedOfficer) {
+      const msg = 'Access denied: this account is not pre-authorized as an Emergency Officer.';
+      setDbOperationStatus({ loading: false, error: msg, success: null });
+      return { success: false, role: 'citizen' as const, message: msg };
+    }
+    if (matchedOfficer.passwordHash !== hashDemoPassword(password)) {
+      const msg = 'Invalid officer password. Please verify your credentials.';
+      setDbOperationStatus({ loading: false, error: msg, success: null });
+      return { success: false, role: 'citizen' as const, message: msg };
+    }
+    setUserProfile(matchedOfficer.profile);
+    setAuthenticatedRole('officer');
+    setRoleState('officer');
+    setIsAuthenticated(true);
+    try {
+      sessionStorage.setItem(SESSION_KEY_AUTH_EMAIL, matchedOfficer.email);
+      if (rememberMe) {
+        localStorage.setItem(SESSION_KEY_AUTH_EMAIL, matchedOfficer.email);
+      }
+    } catch {}
+    setDbOperationStatus({
+      loading: false,
+      error: null,
+      success: 'Emergency Officer signed in.',
+    });
+    return { success: true, role: 'officer' as const };
+  };
+
+  const loginWithOfficerGoogle = async () => {
+    setDbOperationStatus({ loading: true, error: null, success: null });
+    if (!(isFirebaseConfigured() && auth)) {
+      const msg = 'Firebase Authentication must be configured to sign in as an Emergency Officer with Google.';
+      setDbOperationStatus({ loading: false, error: msg, success: null });
+      return { success: false, role: 'citizen' as const, message: msg };
+    }
+
+    verifyingOfficerRef.current = true;
+    try {
+      const googleRes = await floodService.loginWithGoogle();
+      if (!googleRes || !googleRes.fbUser) {
+        const msg = 'Google authentication did not return a valid Firebase user.';
+        setDbOperationStatus({ loading: false, error: msg, success: null });
+        return { success: false, role: 'citizen' as const, message: msg };
+      }
+
+      const verifyRes = await floodService.verifyOfficerWithBackend(googleRes.fbUser);
+      if (!verifyRes.authorized || verifyRes.role !== 'officer') {
+        await floodService.logout();
+        setIsAuthenticated(false);
+        setAuthenticatedRole(null);
+        setRoleState('citizen');
+        const deniedMsg =
+          verifyRes.error ||
+          'Access denied: this Google account is not pre-authorized as an Emergency Officer.';
+        setDbOperationStatus({ loading: false, error: deniedMsg, success: null });
+        return { success: false, role: 'citizen' as const, message: deniedMsg };
+      }
+
+      const profile = await buildProfileFromFirebaseUser(googleRes.fbUser, 'officer');
+      setUserProfile(profile);
+      setAuthenticatedRole('officer');
+      setRoleState('officer');
+      setIsAuthenticated(true);
+      setDbOperationStatus({
+        loading: false,
+        error: null,
+        success: `Verified Emergency Officer ${profile.name} via Google & backend Admin SDK.`,
+      });
+      return { success: true, role: 'officer' as const };
+    } catch (err: any) {
+      const msg = floodService.formatFirebaseAuthError(err);
+      setDbOperationStatus({ loading: false, error: msg, success: null });
+      return { success: false, role: 'citizen' as const, message: msg };
+    } finally {
+      verifyingOfficerRef.current = false;
     }
   };
 
@@ -841,12 +1091,16 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     try {
       let fbUid: string | undefined;
-      if (dataSourceMode === 'FIREBASE' && isFirebaseConfigured() && auth) {
+      if (isFirebaseConfigured() && auth) {
         const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
         if (cred.user) {
           fbUid = cred.user.uid;
           await updateProfile(cred.user, { displayName: cleanName });
-          await floodService.createCitizenUserProfileInFirestore(cred.user.uid, cleanName, cleanEmail, phone);
+          try {
+            await floodService.createCitizenUserProfileInFirestore(cred.user.uid, cleanName, cleanEmail, phone);
+          } catch (firestoreErr) {
+            console.warn('Citizen Firestore profile write deferred:', firestoreErr);
+          }
         }
       } else {
         const exists = demoAccounts.some((acc) => acc.email.toLowerCase() === normalizedEmail);
@@ -866,10 +1120,10 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         phone: phone?.trim() || '',
         avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256',
         emergencySector: 'Western Province — Citizen Sentinel',
-        isFirebaseUser: dataSourceMode === 'FIREBASE',
+        isFirebaseUser: isFirebaseConfigured(),
       };
 
-      if (dataSourceMode === 'DEMO' || !isFirebaseConfigured()) {
+      if (!isFirebaseConfigured()) {
         setDemoAccounts((prev) => [
           ...prev,
           { email: cleanEmail, passwordHash: hashDemoPassword(password), role: 'citizen', profile: newCitizen },
@@ -881,17 +1135,21 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setRoleState('citizen');
       setIsAuthenticated(true);
 
-      try {
-        sessionStorage.setItem(SESSION_KEY_AUTH_EMAIL, cleanEmail);
-        localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(newCitizen));
-      } catch {}
+      if (!isFirebaseConfigured()) {
+        try {
+          sessionStorage.setItem(SESSION_KEY_AUTH_EMAIL, cleanEmail);
+          localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(newCitizen));
+        } catch {}
+      }
 
       addNotification({
         title: `Welcome to FloodSense, ${cleanName}`,
-        description: 'Your citizen reporter account is active. You can now submit road flood alerts and track DMC officer responses.',
+        description: 'Your citizen reporter account is active. You can now submit road flood alerts and track municipal officer responses.',
         type: 'OFFICER_UPDATE',
         severity: 'INFO',
         deliveryChannel: 'in-app',
+        recipientUid: fbUid,
+        recipientEmail: cleanEmail,
       });
 
       setDbOperationStatus({
@@ -901,7 +1159,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
       return { success: true };
     } catch (err: any) {
-      const msg = err?.message || 'Registration failed.';
+      const msg = floodService.formatFirebaseAuthError(err);
       setDbOperationStatus({ loading: false, error: msg, success: null });
       return { success: false, message: msg };
     }
@@ -912,7 +1170,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const logout = async () => {
-    if (dataSourceMode === 'FIREBASE' && isFirebaseConfigured()) {
+    if (isFirebaseConfigured() && auth) {
       await floodService.logout();
     }
     setIsAuthenticated(false);
@@ -937,28 +1195,22 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (isFirebaseConfigured() && auth) {
         const user = await floodService.loginWithGoogle();
         if (user) {
-          setUserProfile((prev) => ({
-            ...prev,
-            uid: user.uid,
-            name: user.displayName,
-            email: user.email,
-            roleName: user.role === 'officer' ? 'Emergency Management Officer' : 'Citizen Reporter & Resident',
-            isFirebaseUser: true,
-          }));
+          const profile = await buildProfileFromFirebaseUser(user.fbUser, user.role);
+          setUserProfile(profile);
           setAuthenticatedRole(user.role);
           setRoleState(user.role);
           setIsAuthenticated(true);
           setDbOperationStatus({
             loading: false,
             error: null,
-            success: `Signed in as ${user.displayName} via Google Firebase Auth.`,
+            success: `Signed in as ${profile.name} via Google Firebase Auth.`,
           });
           return { success: true, role: user.role };
         }
       }
 
-      if (dataSourceMode === 'FIREBASE') {
-        const msg = 'Firebase Auth is not configured in this environment.';
+      if (dataSourceMode === 'FIREBASE' || isFirebaseConfigured()) {
+        const msg = 'Firebase Auth is not ready in this environment.';
         setDbOperationStatus({ loading: false, error: msg, success: null });
         return { success: false, role: 'citizen' as const, message: msg };
       }
@@ -978,7 +1230,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
       return { success: true, role: 'citizen' as const };
     } catch (err: any) {
-      const msg = err?.message || 'Google authentication error.';
+      const msg = floodService.formatFirebaseAuthError(err);
       setDbOperationStatus({
         loading: false,
         error: msg,
@@ -1093,12 +1345,14 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           : `Report Submitted: ${result.report.id} (${result.report.area})`,
         description: result.isDuplicate
           ? `Flagged as near-duplicate of ${result.duplicateOfId}. Evidence preserved for officer review.`
-          : `${result.report.waterLevel} flood reported at ${result.report.location}. Queued for DMC officer inspection.`,
+          : `${result.report.waterLevel} flood reported at ${result.report.location}. Queued for municipal officer inspection.`,
         location: result.report.location,
         type: 'NEW_REPORT',
         severity: result.report.riskLevel,
         deliveryChannel: 'in-app',
         reportId: result.report.id,
+        recipientUid: resolvedUid,
+        recipientEmail: userProfile.email,
       });
 
       const aiSt = result.report.aiStatus;
@@ -1217,6 +1471,36 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
+  const retryPublicSync = async (
+    reportId: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const res = await floodService.retryPublicSync(reportId);
+    if (res.ok) {
+      setReports((prev) =>
+        prev.map((r) =>
+          r.id === reportId
+            ? {
+                ...r,
+                publicSyncStatus: 'SYNCED',
+                publicSyncError: undefined,
+                hotspotId: res.hotspot?.id || r.hotspotId,
+              }
+            : r
+        )
+      );
+      if (res.hotspot) {
+        setHotspots((prev) => {
+          const exists = prev.some((h) => h.id === res.hotspot!.id);
+          return exists
+            ? prev.map((h) => (h.id === res.hotspot!.id ? res.hotspot! : h))
+            : [res.hotspot!, ...prev];
+        });
+      }
+      return { ok: true };
+    }
+    return { ok: false, error: res.error || 'Public sync retry failed.' };
+  };
+
   const resetDemonstrationData = (options?: { resetSettings?: boolean }) => {
     floodService.resetDemonstrationData(options);
     setReports(INITIAL_REPORTS);
@@ -1227,6 +1511,15 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setRiskThresholds(DEFAULT_RISK_THRESHOLDS);
     }
   };
+
+  const scopedNotifications =
+    dataSourceMode === 'DEMO'
+      ? notifications.filter((n) => {
+          if (!n.recipientEmail && !n.recipientUid) return true;
+          if (userProfile.uid && n.recipientUid === userProfile.uid) return true;
+          return n.recipientEmail?.toLowerCase() === userProfile.email?.toLowerCase();
+        })
+      : notifications;
 
   return (
     <FloodContext.Provider
@@ -1244,10 +1537,13 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         userProfile,
         setUserProfile,
         updateUserProfile,
+        retryPublicSync,
         isAuthenticated,
         setIsAuthenticated,
         switchPersona,
         loginWithEmail,
+        loginWithOfficerEmail,
+        loginWithOfficerGoogle,
         registerWithEmail,
         requestPasswordReset,
         logout,
@@ -1255,7 +1551,7 @@ export const FloodProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setSelectedHotspotId,
         selectedReportId,
         setSelectedReportId,
-        notifications,
+        notifications: scopedNotifications,
         markAllNotificationsAsRead,
         markNotificationAsRead,
         addNotification,

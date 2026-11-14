@@ -16,24 +16,20 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    function isAdmin() {
-      return isSignedIn() && (
-        request.auth.token.role == 'admin' ||
-        request.auth.token.admin == true
-      );
-    }
-
-    // Officers are validated strictly via custom token claims or trusted server document
+    // Officers are validated strictly via custom token claims or active trusted server document
     function isOfficer() {
       return isSignedIn() && (
         request.auth.token.role == 'officer' ||
         request.auth.token.officer == true ||
-        exists(/databases/$(database)/documents/officers/$(request.auth.uid))
+        (
+          exists(/databases/$(database)/documents/officers/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/officers/$(request.auth.uid)).data.active != false
+        )
       );
     }
 
     function isPrivileged() {
-      return isOfficer() || isAdmin();
+      return isOfficer();
     }
 
     function isValidId(id) {
@@ -62,6 +58,8 @@ service cloud.firestore {
         && data.area is string && data.area.size() > 0 && data.area.size() <= 80
         && (!('description' in data) || (data.description is string && data.description.size() <= 2000))
         && (!('submissionRequestId' in data) || (data.submissionRequestId is string && data.submissionRequestId.size() <= 128))
+        && (!('storagePath' in data) || (data.storagePath is string && data.storagePath.size() <= 300))
+        && (!('publicSyncStatus' in data) || data.publicSyncStatus in ['PENDING', 'SYNCED', 'FAILED'])
         && (!('aiStatus' in data) || data.aiStatus in ['NOT_RUN', 'PENDING', 'COMPLETED', 'FAILED', 'SIMULATED'])
         && isValidCoordinates(data.lat, data.lng)
         && data.waterLevel in ['Low', 'Moderate', 'High', 'Severe']
@@ -72,26 +70,42 @@ service cloud.firestore {
         && data.reporterId is string && data.reporterId.size() <= 128;
     }
 
-    // Users collection: Private user accounts (client cannot elevate role)
+    // Users collection: Private user accounts (client cannot elevate role or inject privilege fields)
     match /users/{userId} {
       allow get: if isOwner(userId) || isPrivileged();
       allow list: if isPrivileged();
       allow create: if isOwner(userId)
         && isValidId(userId)
+        && incoming().keys().hasAll(['uid', 'email'])
+        && incoming().keys().hasOnly(['uid', 'email', 'displayName', 'name', 'phone', 'role', 'isOfficer', 'department', 'emergencySector', 'photoURL', 'avatarUrl', 'createdAt', 'updatedAt'])
         && incoming().uid == userId
+        && incoming().email is string && incoming().email.size() <= 160
         && (!('role' in incoming()) || incoming().role == 'citizen')
-        && (!('isOfficer' in incoming()) || incoming().isOfficer == false);
+        && (!('isOfficer' in incoming()) || incoming().isOfficer == false)
+        && (!('displayName' in incoming()) || (incoming().displayName is string && incoming().displayName.size() <= 120))
+        && (!('name' in incoming()) || (incoming().name is string && incoming().name.size() <= 120))
+        && (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 40))
+        && (!('department' in incoming()) || (incoming().department is string && incoming().department.size() <= 120))
+        && (!('emergencySector' in incoming()) || (incoming().emergencySector is string && incoming().emergencySector.size() <= 120));
       allow update: if isOwner(userId)
         && isValidId(userId)
-        && incoming().uid == userId
+        && incoming().uid == existing().uid
+        && !incoming().diff(existing()).affectedKeys().hasAny(['uid', 'email', 'role', 'isOfficer', 'officer', 'admin', 'isAdmin', 'claims', 'customClaims', 'permissions', 'roleName', 'createdAt'])
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'name', 'phone', 'department', 'emergencySector', 'photoURL', 'avatarUrl', 'updatedAt'])
         && (!('role' in incoming()) || incoming().role == existing().role)
-        && (!('isOfficer' in incoming()) || incoming().isOfficer == existing().isOfficer);
-      allow delete: if isOwner(userId) || isAdmin();
+        && (!('isOfficer' in incoming()) || incoming().isOfficer == existing().isOfficer)
+        && (!('displayName' in incoming()) || (incoming().displayName is string && incoming().displayName.size() <= 120))
+        && (!('name' in incoming()) || (incoming().name is string && incoming().name.size() <= 120))
+        && (!('phone' in incoming()) || (incoming().phone is string && incoming().phone.size() <= 40))
+        && (!('department' in incoming()) || (incoming().department is string && incoming().department.size() <= 120))
+        && (!('emergencySector' in incoming()) || (incoming().emergencySector is string && incoming().emergencySector.size() <= 120));
+      allow delete: if isOwner(userId) || isOfficer();
     }
 
     // Trusted Officers Registry (Managed strictly by Firebase Admin SDK server-side)
     match /officers/{officerId} {
-      allow read: if isPrivileged();
+      allow get: if isOwner(officerId) || isOfficer();
+      allow list: if isOfficer();
       allow write: if false;
     }
 
@@ -105,14 +119,15 @@ service cloud.firestore {
         && isValidReport(incoming())
         && incoming().reporterId == request.auth.uid
         && incoming().incidentStatus in ['Submitted', 'Under Review']
-        && incoming().verificationStatus == 'UNDER REVIEW';
+        && incoming().verificationStatus == 'UNDER REVIEW'
+        && (!('publicSyncStatus' in incoming()) || incoming().publicSyncStatus == 'PENDING');
 
       allow update: if isValidId(reportId) && isValidReport(incoming()) && (
         (isOwner(existing().reporterId)
           && existing().incidentStatus in ['Submitted', 'More Info Requested']
-          && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'additionalObservations', 'imageUrl'])) ||
+          && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'additionalObservations', 'imageUrl', 'storagePath'])) ||
         (isPrivileged()
-          && incoming().diff(existing()).affectedKeys().hasOnly(['incidentStatus', 'verificationStatus', 'officerNotes', 'statusHistory', 'verificationTimestamp', 'verifiedBy', 'riskLevel', 'aiConfidence', 'aiClassification', 'aiStatus', 'aiVerificationDetails']))
+          && incoming().diff(existing()).affectedKeys().hasOnly(['incidentStatus', 'verificationStatus', 'officerNotes', 'statusHistory', 'verificationTimestamp', 'verifiedBy', 'riskLevel', 'aiConfidence', 'aiClassification', 'aiStatus', 'aiVerificationDetails', 'publicSyncStatus']))
       );
 
       allow delete: if (isOwner(existing().reporterId) && existing().incidentStatus == 'Submitted') || isPrivileged();
@@ -124,9 +139,12 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if isPrivileged()
         && isValidId(reportId)
+        && (!('reporterName' in incoming()))
         && (!('reporterPhone' in incoming()))
         && (!('reporterEmail' in incoming()))
-        && (!('reporterId' in incoming()));
+        && (!('reporterId' in incoming()))
+        && (!('officerNotes' in incoming()))
+        && (!('imageUrl' in incoming()));
       allow delete: if isPrivileged();
     }
 

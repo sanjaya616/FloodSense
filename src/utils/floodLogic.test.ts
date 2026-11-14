@@ -662,4 +662,72 @@ test('calculateDynamicAnalytics computes real verification duration and data com
   assert.ok(analytics.reportVolumeOverTime.length >= 1);
 });
 
+// 22. Strict temporal window total component span clamping in clusterReports
+test('clusterReports prevents chaining across reports whose total temporal span exceeds temporalWindowHours', () => {
+  const baseMs = Date.UTC(2026, 10, 14, 6, 0, 0);
+  const reports: FloodReport[] = [
+    {
+      id: 'R-SPAN-1',
+      location: 'Kollupitiya Junction',
+      area: 'Kollupitiya',
+      lat: 6.912,
+      lng: 79.85,
+      timestamp: new Date(baseMs).toISOString(),
+      waterLevel: 'Moderate',
+      roadAccessibility: 'Partially Blocked',
+      floodType: 'Street Waterlogging',
+      description: 'First reading',
+      riskLevel: 'MEDIUM',
+      verificationStatus: 'VERIFIED',
+      incidentStatus: 'Verified',
+      statusHistory: [],
+    },
+    {
+      id: 'R-SPAN-2',
+      location: 'Kollupitiya Junction',
+      area: 'Kollupitiya',
+      lat: 6.9121,
+      lng: 79.8501,
+      timestamp: new Date(baseMs + 1.5 * 60 * 60 * 1000).toISOString(),
+      waterLevel: 'Moderate',
+      roadAccessibility: 'Partially Blocked',
+      floodType: 'Street Waterlogging',
+      description: 'Middle reading',
+      riskLevel: 'MEDIUM',
+      verificationStatus: 'VERIFIED',
+      incidentStatus: 'Verified',
+      statusHistory: [],
+    },
+    {
+      id: 'R-SPAN-3',
+      location: 'Kollupitiya Junction',
+      area: 'Kollupitiya',
+      lat: 6.9122,
+      lng: 79.8502,
+      timestamp: new Date(baseMs + 3.0 * 60 * 60 * 1000).toISOString(),
+      waterLevel: 'Moderate',
+      roadAccessibility: 'Partially Blocked',
+      floodType: 'Street Waterlogging',
+      description: 'Late reading',
+      riskLevel: 'MEDIUM',
+      verificationStatus: 'VERIFIED',
+      incidentStatus: 'Verified',
+      statusHistory: [],
+    },
+  ];
 
+  const hotspots = clusterReports(reports, {
+    spatialRadiusMeters: 500,
+    temporalWindowHours: 2,
+  });
+
+  // Because R-SPAN-1 (0h) and R-SPAN-3 (3h) span 3 hours > 2h window, they must NOT merge into 1 hotspot
+  assert.equal(hotspots.length, 2);
+  for (const hs of hotspots) {
+    const timestamps = hs.associatedReportIds.map(
+      (id) => Date.parse(reports.find((r) => r.id === id)!.timestamp)
+    );
+    const spanMs = Math.max(...timestamps) - Math.min(...timestamps);
+    assert.ok(spanMs <= 2 * 60 * 60 * 1000, `Cluster ${hs.id} exceeded 2h span: ${spanMs}`);
+  }
+});

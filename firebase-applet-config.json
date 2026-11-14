@@ -1,8 +1,12 @@
 {
-  "projectId": "",
-  "appId": "",
-  "apiKey": "",
-  "authDomain": "",
-  "storageBucket": "",
-  "messagingSenderId": ""
+  "projectId": "regal-interface-3pt51",
+  "appId": "1:540341851927:web:12f92d80606f7b6c168952",
+  "apiKey": "AIzaSyCkLuRLWpfX9CxtWgezpMIranqWX54fR7E",
+  "authDomain": "regal-interface-3pt51.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-floodsenseurbanf-a0970a1e-82da-4252-8c08-63ead83287ae",
+  "storageBucket": "regal-interface-3pt51.firebasestorage.app",
+  "messagingSenderId": "540341851927",
+  "measurementId": "",
+  "oAuthClientId": "540341851927-d6626qmflnnk1sa9fsfqintcpv6i1gi1.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }

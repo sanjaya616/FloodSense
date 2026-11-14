@@ -422,55 +422,81 @@ export const AnalyticsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Insights Panel */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-xs">
-        <h3 className="text-base font-bold text-slate-900 mb-1 flex items-center gap-2">
-          <Sparkles className="w-5 h-5 text-cyan-600" />
-          <span>Big Data Intelligence & Analytical Transparency Notice</span>
-        </h3>
-        <p className="text-xs text-slate-500 mb-4">
-          All statistical charts are derived from current active reports, realistic Colombo scenario datasets, and Open-Meteo meteorological telemetry.
-        </p>
+      {/* Insights Panel (Dynamically computed from active window) */}
+      {(() => {
+        const sortedZones = [...analytics.reportsByZone].sort((a, b) => b.reports - a.reports);
+        const topZone = sortedZones[0];
+        const topZoneShare =
+          topZone && analytics.totalReports > 0
+            ? Math.round((topZone.reports / analytics.totalReports) * 100)
+            : 0;
+        const measuredRainfallHotspots = hotspots.filter((h) => h.rainfallSource !== 'MISSING').length;
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80">
-            <span className="font-bold text-slate-900 block mb-1">
-              Sector Vulnerability Density
-            </span>
-            <p className="text-slate-600 leading-relaxed">
-              Maradana and Kolonnawa exhibit the highest concentration of reports, indicating vulnerability
-              in areas where rail underpasses and Kelani tributary canals experience sluggish discharge.
+        return (
+          <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-1">
+              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-cyan-600" />
+                <span>Computed Insights &amp; Analytical Transparency Notice</span>
+              </h3>
+              <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-slate-100 text-slate-700 self-start sm:self-auto">
+                Filter Window: {timeRange.toUpperCase()} ({analytics.totalReports} reports)
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mb-4">
+              All statistical metrics above and the first three summaries below are calculated dynamically from the active report window and Open-Meteo rainfall telemetry.
             </p>
-          </div>
 
-          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80">
-            <span className="font-bold text-slate-900 block mb-1">
-              Rainfall Lag Response Time
-            </span>
-            <p className="text-slate-600 leading-relaxed">
-              Urban street waterlogging reports spike approximately 35–45 minutes following peak radar
-              reflectivity, reflecting surface runoff velocity on paved asphalt thoroughfares.
-            </p>
-          </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80">
+                <span className="font-bold text-slate-900 block mb-1">
+                  Top Reported Sector in Window
+                </span>
+                <p className="text-slate-600 leading-relaxed">
+                  {topZone && topZone.reports > 0
+                    ? `${topZone.zone} accounts for ${topZone.reports} of ${analytics.totalReports} filtered reports (${topZoneShare}% share), including ${topZone.highRisk} HIGH-risk submission(s).`
+                    : `No flood reports fall within the selected ${timeRange.toUpperCase()} window.`}
+                </p>
+              </div>
 
-          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80">
-            <span className="font-bold text-slate-900 block mb-1">
-              Tidal Discharging Restriction
-            </span>
-            <p className="text-slate-600 leading-relaxed">
-              Wellawatte coastal canal outfalls exhibit backwater surcharge whenever heavy precipitation
-              coincides with oceanic astronomical high-tide windows along Marine Drive.
-            </p>
-          </div>
-        </div>
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80">
+                <span className="font-bold text-slate-900 block mb-1">
+                  Verification &amp; Deduplication Yield
+                </span>
+                <p className="text-slate-600 leading-relaxed">
+                  {analytics.verifiedCount} of {analytics.totalReports} reports are officer-verified ({analytics.verifiedPercentage}%).{' '}
+                  {analytics.duplicateReportCount} near-duplicate submission(s) were filtered from unique cluster counts.
+                  {analytics.avgReviewMinutes !== null
+                    ? ` Mean review latency is ${analytics.avgReviewMinutes} minutes.`
+                    : ' Insufficient verification timestamps to compute mean review latency.'}
+                </p>
+              </div>
 
-        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2 text-[11px] text-slate-500">
-          <Info className="w-4 h-4 text-cyan-600 shrink-0" />
-          <span>
-            Demonstration Note: This academic prototype does not make scientific claims regarding long-term climate trends.
-          </span>
-        </div>
-      </div>
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80">
+                <span className="font-bold text-slate-900 block mb-1">
+                  Rainfall Telemetry Coverage
+                </span>
+                <p className="text-slate-600 leading-relaxed">
+                  {measuredRainfallHotspots} of {totalActiveHotspots} active hotspot cluster(s) include paired forecast rainfall telemetry;{' '}
+                  {analytics.hasRainfallCorrelationData
+                    ? 'paired rainfall-vs-volume buckets are rendered in Chart 5.'
+                    : 'Chart 5 suppresses regression bars where forecast telemetry pairs are incomplete.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 p-3.5 bg-amber-50/70 rounded-xl border border-amber-200/80 text-[11px] text-amber-900 flex items-start gap-2">
+              <Info className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <strong className="block">Illustrative Colombo Domain Hypothesis (Academic Scenario Only):</strong>
+                <span>
+                  Low-lying canal basins, railway underpasses, and coastal outfalls are modeled in the coursework scenario as representative urban drainage bottlenecks. This prototype runs Big Data Analytics aggregations over small-to-medium demonstration/Firebase datasets and does not claim validated hydrological lag or citywide climate trends.
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

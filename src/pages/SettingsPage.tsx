@@ -66,7 +66,7 @@ interface SystemHealthData {
       state: ServiceHealthState;
       status: string;
       network: string;
-      chainId: number;
+      chainId?: number;
       isSimulated: boolean;
     };
     mapTileService: {
@@ -84,13 +84,14 @@ export const SettingsPage: React.FC = () => {
     role,
     setRole,
     userProfile,
-    setUserProfile,
+    updateUserProfile,
     resetDemonstrationData,
     reports,
     hotspots,
     blockchainRecords,
     dataSourceMode,
     setDataSourceMode,
+    isFirebaseAvailable,
     dbOperationStatus,
     loginWithGoogle,
     logoutGoogle,
@@ -103,6 +104,8 @@ export const SettingsPage: React.FC = () => {
   } = useFlood();
 
   const [savedMessage, setSavedMessage] = useState(false);
+  const [profileSaveError, setProfileSaveError] = useState<string | null>(null);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
   const [reclusterNotice, setReclusterNotice] = useState(false);
 
@@ -180,32 +183,39 @@ export const SettingsPage: React.FC = () => {
     });
   }, [userProfile]);
 
-  const handleProfileSave = (e: React.FormEvent) => {
+  const handleProfileSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    setProfileSaveError(null);
+    setSavedMessage(false);
+    setIsSavingProfile(true);
 
-    const updatedProfile = {
-      ...userProfile,
+    const updates = {
       name: profileForm.name.trim(),
-      roleName: profileForm.roleName.trim(),
       department: profileForm.department.trim(),
       emergencySector: profileForm.emergencySector.trim(),
-      email: profileForm.email.trim(),
       phone: profileForm.phone.trim(),
     };
 
-    // Persist to Context state and localStorage
-    setUserProfile(updatedProfile);
     try {
-      localStorage.setItem('floodsense_profile_v2', JSON.stringify(updatedProfile));
-      localStorage.setItem('floodsense_notify_high_risk', JSON.stringify(notifyHighRisk));
-      localStorage.setItem('floodsense_notify_weather', JSON.stringify(notifyWeatherAdvisory));
-      localStorage.setItem('floodsense_notify_sms', JSON.stringify(notifySms));
-    } catch (err) {
-      console.warn('Failed to persist profile to localStorage:', err);
-    }
+      const res = await updateUserProfile(updates);
+      if (!res.success) {
+        setProfileSaveError(res.error || 'Failed to save profile changes.');
+        return;
+      }
 
-    setSavedMessage(true);
-    setTimeout(() => setSavedMessage(false), 3500);
+      try {
+        localStorage.setItem('floodsense_notify_high_risk', JSON.stringify(notifyHighRisk));
+        localStorage.setItem('floodsense_notify_weather', JSON.stringify(notifyWeatherAdvisory));
+        localStorage.setItem('floodsense_notify_sms', JSON.stringify(notifySms));
+      } catch (err) {
+        console.warn('Failed to persist notification preferences to localStorage:', err);
+      }
+
+      setSavedMessage(true);
+      setTimeout(() => setSavedMessage(false), 3500);
+    } finally {
+      setIsSavingProfile(false);
+    }
   };
 
   const handleResetData = () => {
@@ -292,6 +302,13 @@ export const SettingsPage: React.FC = () => {
         <div className="p-3.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl text-xs flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 text-emerald-600" />
           <span>Profile credentials and notification preferences successfully saved.</span>
+        </div>
+      )}
+
+      {profileSaveError && (
+        <div className="p-3.5 bg-red-50 text-red-800 border border-red-200 rounded-xl text-xs flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+          <span>{profileSaveError}</span>
         </div>
       )}
 
@@ -610,8 +627,8 @@ export const SettingsPage: React.FC = () => {
               <span>Demonstration Role Switcher</span>
             </h3>
             <p className="text-xs text-slate-500">
-              {dataSourceMode === 'FIREBASE'
-                ? 'Locked in Cloud Firestore Mode — Officer access is governed strictly by Firebase custom claims.'
+              {isFirebaseAvailable || dataSourceMode === 'FIREBASE'
+                ? 'Locked while Firebase Authentication is active — Officer access is governed strictly by backend-verified Officer credentials.'
                 : 'Toggle between municipal disaster management command and citizen community reporting (Demo Mode only).'}
             </p>
           </div>
@@ -623,14 +640,14 @@ export const SettingsPage: React.FC = () => {
         <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 flex items-start gap-2">
           <Shield className="w-4 h-4 text-cyan-600 shrink-0 mt-0.5" />
           <p>
-            <strong>Security Notice:</strong> Client-side role switching is enabled strictly in Demonstration Mode.
-            In Firebase Cloud mode, administrative officer rights are governed solely by verified custom token claims (<code>request.auth.token.role == &apos;officer&apos;</code>) and client privilege escalation is blocked.
+            <strong>Security Notice:</strong> Client-side role switching is enabled strictly when Firebase is unconfigured in Demonstration Mode.
+            When Firebase Authentication is active, Emergency Officer rights are governed solely by backend-verified custom claims (<code>request.auth.token.role == &apos;officer&apos;</code>) or an active <code>/officers/&#123;uid&#125;</code> record, and client privilege escalation is blocked.
           </p>
         </div>
 
-        {dataSourceMode === 'FIREBASE' ? (
+        {isFirebaseAvailable || dataSourceMode === 'FIREBASE' ? (
           <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 font-medium">
-            Role switching is disabled while connected to Cloud Firestore. Sign in with an authorized Officer Firebase account to access Emergency Officer features.
+            Role switching is disabled while Firebase Authentication is active. Sign in with a pre-authorized Emergency Officer account to access Emergency Officer features.
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
@@ -838,12 +855,13 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block font-bold text-slate-700 mb-1">Official Role Title</label>
+            <label className="block font-bold text-slate-700 mb-1">Official Role Title (Governed by Firebase Claims)</label>
             <input
               type="text"
+              readOnly
+              disabled
               value={profileForm.roleName}
-              onChange={(e) => setProfileForm({ ...profileForm, roleName: e.target.value })}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white"
+              className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-slate-500 cursor-not-allowed"
             />
           </div>
 
@@ -868,12 +886,13 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block font-bold text-slate-700 mb-1">Gov Contact Email</label>
+            <label className="block font-bold text-slate-700 mb-1">Gov Contact Email (Governed by Firebase Auth)</label>
             <input
               type="email"
+              readOnly
+              disabled
               value={profileForm.email}
-              onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white font-mono"
+              className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg text-slate-500 font-mono cursor-not-allowed"
             />
           </div>
 
@@ -931,9 +950,10 @@ export const SettingsPage: React.FC = () => {
         <div className="pt-2 flex justify-end">
           <button
             type="submit"
-            className="px-5 py-2 bg-slate-900 text-white font-bold text-xs rounded-lg hover:bg-slate-800 transition-colors shadow-xs"
+            disabled={isSavingProfile}
+            className="px-5 py-2 bg-slate-900 text-white font-bold text-xs rounded-lg hover:bg-slate-800 transition-colors shadow-xs disabled:opacity-50"
           >
-            Update & Persist Profile Credentials
+            {isSavingProfile ? 'Saving...' : 'Update & Persist Profile Credentials'}
           </button>
         </div>
       </form>

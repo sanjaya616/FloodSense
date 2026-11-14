@@ -160,7 +160,9 @@ export const OverviewPage: React.FC = () => {
               </div>
               <div className="flex items-baseline gap-2">
                 <span className="text-lg font-bold text-white">{weather.currentRainfallMm} mm/h</span>
-                <span className="text-cyan-400 font-semibold">({weather.expected3hRainfallMm}mm 3h)</span>
+                <span className="text-cyan-400 font-semibold">
+                  ({weather.expected3hRainfallMm !== null ? `${weather.expected3hRainfallMm}mm 3h` : '3h N/A'})
+                </span>
               </div>
             </div>
 

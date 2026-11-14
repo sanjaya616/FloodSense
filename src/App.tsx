@@ -10,10 +10,7 @@ import {
   Route,
   Navigate,
   useLocation,
-  useNavigate,
-  NavLink,
 } from 'react-router-dom';
-import { ShieldAlert, ArrowLeft, LogOut, Droplets } from 'lucide-react';
 import { FloodProvider, useFlood } from './context/FloodContext';
 
 // Layouts
@@ -70,66 +67,40 @@ const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 };
 
 const RequireOfficer: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, isAuthLoading, authenticatedRole, userProfile, logout } = useFlood();
+  const { isAuthenticated, isAuthLoading, authenticatedRole } = useFlood();
   const location = useLocation();
-  const navigate = useNavigate();
 
   if (isAuthLoading) {
     return <AuthLoadingScreen />;
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+    return (
+      <Navigate
+        to="/login?portal=officer"
+        state={{
+          from: location.pathname,
+          portal: 'officer',
+          accessDeniedMessage:
+            'Emergency Officer authentication is required to access the Officer Operations Center.',
+        }}
+        replace
+      />
+    );
   }
 
   if (authenticatedRole !== 'officer') {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
-        <div className="max-w-lg w-full bg-white rounded-3xl border border-slate-200 shadow-lg p-8 text-center space-y-5">
-          <div className="w-14 h-14 rounded-2xl bg-red-50 border border-red-200 text-red-600 flex items-center justify-center mx-auto">
-            <ShieldAlert className="w-7 h-7" />
-          </div>
-
-          <div className="space-y-2">
-            <span className="inline-flex items-center gap-1.5 text-[11px] font-mono font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-red-100 text-red-800">
-              Access Denied · 403
-            </span>
-            <h1 className="text-xl font-extrabold text-slate-900">
-              Authorized Emergency Officers Only
-            </h1>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Signed in as <strong className="text-slate-900">{userProfile.email}</strong> (Citizen account).
-              The Emergency Operations Center is restricted to verified Disaster Management Centre officers.
-            </p>
-          </div>
-
-          <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
-            <NavLink
-              to="/citizen"
-              className="flex-1 py-2.5 px-4 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap"
-            >
-              <ArrowLeft className="w-4 h-4 shrink-0" />
-              <span>Return to Citizen Portal</span>
-            </NavLink>
-            <button
-              type="button"
-              onClick={async () => {
-                await logout();
-                navigate('/login');
-              }}
-              className="flex-1 py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <LogOut className="w-4 h-4 shrink-0" />
-              <span>Officer Sign In</span>
-            </button>
-          </div>
-
-          <div className="pt-3 border-t border-slate-100 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
-            <Droplets className="w-3.5 h-3.5 text-cyan-600" />
-            <span>FloodSense Urban Intelligence · RBAC Enforced</span>
-          </div>
-        </div>
-      </div>
+      <Navigate
+        to="/citizen"
+        state={{
+          accessDenied: true,
+          deniedFrom: location.pathname,
+          accessDeniedMessage:
+            'Access Denied (403): Only pre-authorized Emergency Officers may access Officer Operations routes.',
+        }}
+        replace
+      />
     );
   }
 

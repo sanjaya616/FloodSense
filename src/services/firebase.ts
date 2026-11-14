@@ -28,25 +28,48 @@ export interface FirebaseConfig {
 
 let firebaseConfig: FirebaseConfig | null = null;
 
-const isValidString = (str?: string) =>
-  typeof str === 'string' && str.trim().length > 0 && str !== 'remixed-project-id';
+const sanitizeEnvValue = (str?: string): string => {
+  if (typeof str !== 'string') return '';
+  let s = str.trim();
+  if (s.endsWith(',')) s = s.slice(0, -1).trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+};
 
-// Prioritize VITE_ env variables when present, else fallback to firebase-applet-config.json
-if (import.meta.env.VITE_FIREBASE_API_KEY && import.meta.env.VITE_FIREBASE_PROJECT_ID) {
-  firebaseConfig = {
-    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || `${import.meta.env.VITE_FIREBASE_PROJECT_ID}.firebaseapp.com`,
-    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || `${import.meta.env.VITE_FIREBASE_PROJECT_ID}.appspot.com`,
-    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-    appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  };
-} else if (
+const isValidString = (str?: string) => {
+  const s = sanitizeEnvValue(str);
+  return s.length > 0 && s !== 'remixed-project-id' && !s.startsWith('MY_FIREBASE_');
+};
+
+// Prioritize provisioned firebase-applet-config.json, then fallback to sanitized VITE_FIREBASE_* env vars
+const viteEnv = typeof import.meta !== 'undefined' && (import.meta as any).env ? (import.meta as any).env : {};
+if (
   rawFirebaseConfig &&
   isValidString(rawFirebaseConfig.apiKey) &&
   isValidString(rawFirebaseConfig.projectId)
 ) {
-  firebaseConfig = rawFirebaseConfig;
+  firebaseConfig = {
+    apiKey: rawFirebaseConfig.apiKey.trim(),
+    authDomain: rawFirebaseConfig.authDomain?.trim() || `${rawFirebaseConfig.projectId.trim()}.firebaseapp.com`,
+    projectId: rawFirebaseConfig.projectId.trim(),
+    storageBucket: rawFirebaseConfig.storageBucket?.trim() || `${rawFirebaseConfig.projectId.trim()}.firebasestorage.app`,
+    messagingSenderId: rawFirebaseConfig.messagingSenderId?.trim(),
+    appId: rawFirebaseConfig.appId?.trim(),
+    firestoreDatabaseId: rawFirebaseConfig.firestoreDatabaseId?.trim(),
+  };
+} else if (isValidString(viteEnv.VITE_FIREBASE_API_KEY) && isValidString(viteEnv.VITE_FIREBASE_PROJECT_ID)) {
+  const cleanProjectId = sanitizeEnvValue(viteEnv.VITE_FIREBASE_PROJECT_ID);
+  firebaseConfig = {
+    apiKey: sanitizeEnvValue(viteEnv.VITE_FIREBASE_API_KEY),
+    authDomain: sanitizeEnvValue(viteEnv.VITE_FIREBASE_AUTH_DOMAIN) || `${cleanProjectId}.firebaseapp.com`,
+    projectId: cleanProjectId,
+    storageBucket: sanitizeEnvValue(viteEnv.VITE_FIREBASE_STORAGE_BUCKET) || `${cleanProjectId}.appspot.com`,
+    messagingSenderId: sanitizeEnvValue(viteEnv.VITE_FIREBASE_MESSAGING_SENDER_ID),
+    appId: sanitizeEnvValue(viteEnv.VITE_FIREBASE_APP_ID),
+    firestoreDatabaseId: sanitizeEnvValue(viteEnv.VITE_FIREBASE_DATABASE_ID) || rawFirebaseConfig?.firestoreDatabaseId,
+  };
 }
 
 let app: FirebaseApp | null = null;
@@ -66,6 +89,40 @@ if (firebaseConfig && firebaseConfig.apiKey && firebaseConfig.projectId) {
 }
 
 export { app, auth, db, storage, firebaseConfig };
+
+export enum FirestoreOperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export function handleFirestoreError(
+  error: unknown,
+  operationType: FirestoreOperationType,
+  path: string | null
+): never {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
+      providerInfo:
+        auth?.currentUser?.providerData.map((provider) => ({
+          providerId: provider.providerId,
+          displayName: provider.displayName,
+          email: provider.email,
+        })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.error('Firestore Error:', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export const isFirebaseConfigured = (): boolean => {
   return !!(app && db && auth);

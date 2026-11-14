@@ -65,7 +65,7 @@ export const CitizenLayout: React.FC = () => {
     if (isAuthenticated && authenticatedRole === 'officer') {
       navigate('/officer/overview');
     } else {
-      navigate('/login');
+      navigate('/login?portal=officer');
     }
   };
 
@@ -84,18 +84,21 @@ export const CitizenLayout: React.FC = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800">
+    <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800 overflow-x-hidden">
       {/* Emergency Advisory Strip */}
       <div className="bg-gradient-to-r from-cyan-900 via-slate-900 to-blue-900 text-white text-xs px-4 py-2 border-b border-cyan-800/40">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="flex h-2 w-2 relative">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <span className="flex h-2 w-2 relative shrink-0">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
             </span>
-            <span className="font-semibold text-cyan-300">Colombo Urban Advisory:</span>
-            <span className="text-slate-200 truncate">
-              {weather.condition} • Forecast {weather.expected3hRainfallMm}mm next 3 hrs
+            <span className="font-semibold text-cyan-300 shrink-0">Colombo Urban Advisory:</span>
+            <span className="text-slate-200 truncate min-w-0">
+              {weather.condition} •{' '}
+              {weather.expected3hRainfallMm !== null
+                ? `Forecast ${weather.expected3hRainfallMm}mm next 3 hrs`
+                : '3h forecast unavailable'}
             </span>
           </div>
 
@@ -103,7 +106,7 @@ export const CitizenLayout: React.FC = () => {
             <span className="hidden sm:inline font-mono">DMC Hotline: 117</span>
             <span className="hidden md:inline font-mono">Suwa Seriya: 1990</span>
             <NavLink
-              to={authenticatedRole === 'officer' ? '/officer/overview' : '/login'}
+              to={authenticatedRole === 'officer' ? '/officer/overview' : '/login?portal=officer'}
               className="text-cyan-400 hover:text-cyan-300 font-semibold flex items-center gap-1 transition-colors"
             >
               <span>{authenticatedRole === 'officer' ? 'Return to Officer EOC' : 'Officer Sign In'}</span>
@@ -115,22 +118,22 @@ export const CitizenLayout: React.FC = () => {
 
       {/* Main Navigation Bar */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-2xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-16 flex items-center justify-between gap-2 sm:gap-4">
           {/* Brand Logo */}
-          <NavLink to="/" className="flex items-center gap-2.5 shrink-0 group">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-600 to-blue-600 flex items-center justify-center text-white shadow-md shadow-cyan-600/20 group-hover:scale-105 transition-transform">
-              <Droplets className="w-5 h-5 text-white" />
+          <NavLink to="/" className="flex items-center gap-2 sm:gap-2.5 shrink-0 group">
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-tr from-cyan-600 to-blue-600 flex items-center justify-center text-white shadow-md shadow-cyan-600/20 group-hover:scale-105 transition-transform">
+              <Droplets className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
             </div>
             <div>
               <div className="flex items-center gap-1.5">
                 <span className="font-extrabold text-base sm:text-lg text-slate-900 tracking-tight">
                   FloodSense
                 </span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-800 font-bold uppercase tracking-wider">
+                <span className="hidden sm:inline text-[10px] px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-800 font-bold uppercase tracking-wider">
                   Citizen
                 </span>
               </div>
-              <span className="text-[10px] text-slate-500 font-medium block -mt-0.5">
+              <span className="hidden sm:block text-[10px] text-slate-500 font-medium -mt-0.5">
                 Smarter Warnings • Safer Communities
               </span>
             </div>
@@ -331,16 +334,16 @@ export const CitizenLayout: React.FC = () => {
                 )}
               </div>
             ) : (
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-1 sm:gap-2 shrink-0">
                 <NavLink
                   to="/login"
-                  className="px-3 py-1.5 text-xs font-bold text-slate-700 hover:text-cyan-700 transition-colors whitespace-nowrap"
+                  className="px-2 sm:px-3 py-1.5 text-xs font-bold text-slate-700 hover:text-cyan-700 transition-colors whitespace-nowrap"
                 >
                   Log In
                 </NavLink>
                 <NavLink
                   to="/register"
-                  className="px-3.5 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-bold shadow-sm transition-all whitespace-nowrap"
+                  className="px-2.5 sm:px-3.5 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-bold shadow-sm transition-all whitespace-nowrap"
                 >
                   Register
                 </NavLink>
@@ -496,10 +499,10 @@ export const CitizenLayout: React.FC = () => {
                 Officer Operations
               </h4>
               <p className="text-xs text-slate-400 leading-relaxed mb-3">
-                Authorized DMC officers, municipal engineers, and emergency dispatchers access the tactical operations center.
+                Authorized municipal emergency officers, drainage engineers, and dispatchers access the tactical operations center (prototype workflow).
               </p>
               <NavLink
-                to={authenticatedRole === 'officer' ? '/officer/overview' : '/login'}
+                to={authenticatedRole === 'officer' ? '/officer/overview' : '/login?portal=officer'}
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-xs font-semibold transition-colors"
               >
                 <span>{authenticatedRole === 'officer' ? 'Launch Officer EOC Dashboard' : 'Officer Portal Sign In'}</span>

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Circle, useMap, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import { FloodReport, FloodHotspot } from '../../utils/floodLogic';
 import { RiskBadge } from '../common/RiskBadge';
@@ -21,6 +21,7 @@ import {
   Maximize2,
   Minimize2,
   Compass,
+  Layers,
 } from 'lucide-react';
 
 interface FloodMapProps {
@@ -144,6 +145,7 @@ export const FloodMap: React.FC<FloodMapProps> = ({
   const [mapCenter, setMapCenter] = useState<[number, number]>(focusCoordinates || [6.9271, 79.8653]); // Colombo center
   const [zoomLevel, setZoomLevel] = useState(focusCoordinates ? focusZoom : 13);
   const [showRadiusCircles, setShowRadiusCircles] = useState(true);
+  const [mobileLegendOpen, setMobileLegendOpen] = useState(false);
 
   // Sector coordinates for rapid tactical focus
   const sectors: Array<{ name: string; center: [number, number]; zoom: number }> = [
@@ -179,7 +181,7 @@ export const FloodMap: React.FC<FloodMapProps> = ({
     <div className={`relative w-full ${heightClass} rounded-2xl overflow-hidden border border-slate-300 shadow-sm bg-slate-100 flex flex-col`}>
       {/* Sector Quick-Focus Ribbon */}
       {showSectorControls && (
-        <div className="absolute top-3 left-3 z-500 bg-white/95 backdrop-blur-md p-1.5 rounded-xl border border-slate-200/90 shadow-md flex items-center gap-1 overflow-x-auto max-w-[calc(100%-160px)]">
+        <div className="absolute top-3 left-3 z-500 bg-white/95 backdrop-blur-md p-1.5 rounded-xl border border-slate-200/90 shadow-md flex items-center gap-1 overflow-x-auto max-w-[calc(100%-24px)] md:max-w-[calc(100%-290px)]">
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 flex items-center gap-1 shrink-0 font-mono">
             <Crosshair className="w-3 h-3 text-cyan-600" />
             Sectors:
@@ -204,9 +206,11 @@ export const FloodMap: React.FC<FloodMapProps> = ({
       <MapContainer
         center={mapCenter}
         zoom={zoomLevel}
+        zoomControl={false}
         scrollWheelZoom={true}
         className="w-full h-full"
       >
+        <ZoomControl position="bottomright" />
         <MapRecenter center={mapCenter} zoom={zoomLevel} />
         
         {/* OpenStreetMap standard clean raster tiles */}
@@ -265,7 +269,7 @@ export const FloodMap: React.FC<FloodMapProps> = ({
                     <div>
                       <span className="text-[10px] text-slate-400 uppercase block font-sans">Reports</span>
                       <span className="font-bold text-slate-800">
-                        {hs.reportCount} Unique ({hs.verificationStatus === 'VERIFIED' ? 'Verified' : 'Under Review'})
+                        {hs.reportCount} Unique ({hs.verificationStatus === 'VERIFIED' ? 'Includes Verified' : 'Unverified'})
                       </span>
                     </div>
                     <div>
@@ -307,17 +311,36 @@ export const FloodMap: React.FC<FloodMapProps> = ({
                 <div className="p-3 max-w-[270px]">
                   <div className="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-slate-100">
                     <span className="font-mono text-xs font-bold text-slate-800">{rep.id}</span>
-                    <RiskBadge level={rep.verificationStatus} size="sm" />
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
+                        rep.verificationStatus === 'VERIFIED'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : rep.verificationStatus === 'REJECTED'
+                          ? 'bg-slate-200 text-slate-700'
+                          : 'bg-amber-100 text-amber-800'
+                      }`}
+                    >
+                      {rep.verificationStatus === 'VERIFIED'
+                        ? 'Officer Verified'
+                        : rep.verificationStatus === 'REJECTED'
+                        ? 'Rejected'
+                        : 'Citizen — Unverified'}
+                    </span>
                   </div>
 
                   <h4 className="text-xs font-bold text-slate-900 leading-tight mb-1">
                     {rep.location}
                   </h4>
-                  
-                  <div className="flex items-center gap-2 text-[11px] text-slate-500 mb-2 font-mono">
+
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 mb-2 font-mono">
                     <span>{rep.floodType}</span>
                     <span>·</span>
                     <span className="font-bold text-slate-800">{rep.waterLevel}</span>
+                    {(rep.isPublicRedacted || rep.coordinatePrecision === 'APPROX_100M_GRID') && (
+                      <span className="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">
+                        ~100m Public Grid
+                      </span>
+                    )}
                   </div>
 
                   {rep.imageUrl && (
@@ -353,16 +376,37 @@ export const FloodMap: React.FC<FloodMapProps> = ({
 
       {/* Overlaid Map Legend & Layer Filter */}
       {showLegendOverlay && (
-        <div className="absolute top-4 right-4 z-500 max-w-xs pointer-events-auto">
-          <MapLegend
-            activeLayer={activeLayer}
-            onLayerChange={setActiveLayer}
-          />
-        </div>
+        <>
+          <div className="hidden md:block absolute top-3 right-3 z-500 max-w-[260px] pointer-events-auto">
+            <MapLegend
+              activeLayer={activeLayer}
+              onLayerChange={setActiveLayer}
+            />
+          </div>
+
+          <div className="md:hidden absolute top-14 right-3 z-500 flex flex-col items-end gap-2 pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => setMobileLegendOpen(!mobileLegendOpen)}
+              className="bg-white/95 backdrop-blur-sm border border-slate-200 text-slate-800 text-[11px] font-bold px-2.5 py-1.5 rounded-lg shadow-md flex items-center gap-1.5"
+            >
+              <Layers className="w-3.5 h-3.5 text-cyan-600" />
+              <span>{mobileLegendOpen ? 'Hide Legend' : 'Layers & Legend'}</span>
+            </button>
+            {mobileLegendOpen && (
+              <div className="max-w-[250px]">
+                <MapLegend
+                  activeLayer={activeLayer}
+                  onLayerChange={setActiveLayer}
+                />
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {/* Bottom Bar: Radius toggle & Center Reset */}
-      <div className="absolute bottom-4 left-4 z-500 flex items-center gap-2">
+      <div className="absolute bottom-3 left-3 z-500 flex flex-wrap items-center gap-2 max-w-[calc(100%-70px)]">
         <button
           type="button"
           onClick={() => {

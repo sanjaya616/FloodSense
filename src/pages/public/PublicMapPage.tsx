@@ -98,26 +98,41 @@ export const PublicMapPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Advisory Banner */}
-      <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-2.5 text-amber-900">
-          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
-          <div>
-            <span className="font-bold">Monsoon Advisory: </span>
-            <span>
-              High-volume street runoff observed around Maradana and Kolonnawa. Avoid low-lying underpasses.
-            </span>
+      {/* Advisory Banner (Computed dynamically from active hotspots) */}
+      {(() => {
+        const highAreas = Array.from(
+          new Set(hotspots.filter((h) => h.riskLevel === 'HIGH').map((h) => h.area))
+        );
+        const mediumAreas = Array.from(
+          new Set(hotspots.filter((h) => h.riskLevel === 'MEDIUM').map((h) => h.area))
+        );
+        const advisoryText =
+          highAreas.length > 0
+            ? `HIGH risk flood clusters active in ${highAreas.join(', ')}. Avoid low-lying underpasses and inundated intersections.`
+            : mediumAreas.length > 0
+            ? `Moderate runoff watch in ${mediumAreas.join(', ')}. Exercise caution near canal corridors.`
+            : 'No HIGH or MEDIUM risk flood hotspot clusters currently active across monitored Colombo wards.';
+
+        return (
+          <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 text-amber-900">
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+              <div>
+                <span className="font-bold">Colombo Flood Advisory: </span>
+                <span>{advisoryText}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 font-mono text-[11px] text-amber-800 bg-amber-100/70 px-2.5 py-1 rounded-lg shrink-0">
+              <Clock className="w-3.5 h-3.5" />
+              <span>
+                {weather.isLive
+                  ? `Open-Meteo Forecast API (${weather.updatedAt})`
+                  : 'Simulated Monsoon Scenario (Demo Mode)'}
+              </span>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2 font-mono text-[11px] text-amber-800 bg-amber-100/70 px-2.5 py-1 rounded-lg shrink-0">
-          <Clock className="w-3.5 h-3.5" />
-          <span>
-            {weather.isLive
-              ? `Open-Meteo Forecast API (${weather.updatedAt})`
-              : 'Simulated Monsoon Scenario (Demo Mode)'}
-          </span>
-        </div>
-      </div>
+        );
+      })()}
 
       {/* Filter and Search Bar */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex flex-col md:flex-row items-stretch md:items-center gap-3 justify-between">
@@ -202,7 +217,7 @@ export const PublicMapPage: React.FC = () => {
 
               <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs font-mono text-slate-600">
                 <span>
-                  {hotspot.reportCount} unique ({hotspot.verificationStatus === 'VERIFIED' ? 'Verified' : 'Under Review'})
+                  {hotspot.reportCount} unique ({hotspot.verificationStatus === 'VERIFIED' ? 'Includes Verified' : 'Unverified'})
                 </span>
                 <span className="text-cyan-700 font-bold">
                   {hotspot.rainfallSource === 'MISSING' ? 'Rain: N/A' : `${hotspot.forecastRainfallMm} mm rain`}

@@ -82,6 +82,11 @@ export interface FloodReport {
   isDuplicate?: boolean;
   duplicateOfReportId?: string;
   duplicateCount?: number;
+  storagePath?: string;
+  publicSyncStatus?: 'PENDING' | 'SYNCED' | 'FAILED';
+  publicSyncError?: string;
+  coordinatePrecision?: 'EXACT' | 'APPROX_100M_GRID' | string;
+  isPublicRedacted?: boolean;
 }
 
 export interface FloodHotspot {
@@ -128,7 +133,7 @@ export interface BlockchainRecord {
   prevHash: string;
   recordHash: string;
   canonicalPayload: string;
-  validatorCount: number;
+  validatorCount?: number;
   isSimulated: boolean;
   payloadHash: string;
   contractAddress?: string;
@@ -550,6 +555,8 @@ export function clusterReports(
     const component: FloodReport[] = [];
     const queue: FloodReport[] = [root];
     visited.add(root.id);
+    let minClusterTime = Date.parse(root.timestamp);
+    let maxClusterTime = minClusterTime;
 
     while (queue.length > 0) {
       const current = queue.shift()!;
@@ -562,6 +569,11 @@ export function clusterReports(
         const candidateTime = Date.parse(candidate.timestamp);
         if (Math.abs(currentTime - candidateTime) > windowMs) continue;
 
+        // Enforce strict total cluster span so BFS chains never exceed temporalWindowHours
+        const nextMinTime = Math.min(minClusterTime, candidateTime);
+        const nextMaxTime = Math.max(maxClusterTime, candidateTime);
+        if (nextMaxTime - nextMinTime > windowMs) continue;
+
         const distance = calculateHaversineDistance(
           current.lat,
           current.lng,
@@ -570,6 +582,8 @@ export function clusterReports(
         );
         if (distance <= config.spatialRadiusMeters) {
           visited.add(candidate.id);
+          minClusterTime = nextMinTime;
+          maxClusterTime = nextMaxTime;
           queue.push(candidate);
         }
       }
@@ -752,17 +766,14 @@ export function generateSimulatedBlockchainRecord(
     timestamp,
     txHash: hashes.txHash,
     blockNumber,
-    network: 'Prototype SHA-256 Hash-Chain (Simulated Ledger)',
+    network: 'Local Prototype SHA-256 Hash-Chain (Simulated Ledger)',
     status: 'CONFIRMED (SIMULATED)',
     merkleRoot: hashes.merkleRoot,
     prevHash: hashes.prevHash,
     recordHash: hashes.recordHash,
     canonicalPayload: hashes.canonicalPayload,
     payloadHash: hashes.payloadHash,
-    validatorCount: 1,
     isSimulated: true,
-    contractAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e (Prototype Audit Spec)',
-    chainId: 11155111,
     auditExplanation: `Prototype SHA-256 Hash-Chain Record: Canonical JSON payload hashed and linked to previous record (${prevHash.slice(0, 14)}...) for tamper-evident audit verification.`,
   };
 }

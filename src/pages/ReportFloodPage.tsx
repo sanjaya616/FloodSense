@@ -289,7 +289,7 @@ export const ReportFloodPage: React.FC = () => {
           <p className="text-slate-300 leading-relaxed">
             Photographs and approximate location coordinates are used exclusively for spatial flood risk
             assessment and municipal dispatch. Personal contact information is protected and accessible
-            only to authorized Disaster Management Center (DMC) officers.
+            only to authorized municipal emergency officers (prototype workflow).
           </p>
         </div>
       </div>

@@ -31,7 +31,7 @@ import { FloodMap } from '../../components/map/FloodMap';
 import { RiskBadge } from '../../components/common/RiskBadge';
 
 export const LandingPage: React.FC = () => {
-  const { hotspots, reports, weather, isAuthenticated, role, getAnalytics } = useFlood();
+  const { hotspots, reports, weather, isAuthenticated, authenticatedRole, getAnalytics } = useFlood();
   const analytics = getAnalytics('all');
 
   // Pick top 4 hotspots for the preview cards
@@ -85,18 +85,24 @@ export const LandingPage: React.FC = () => {
 
           {/* Action CTAs */}
           <div className="flex items-center gap-3">
-            {isAuthenticated ? (
+            {isAuthenticated && authenticatedRole ? (
               <div className="flex items-center gap-2">
                 <NavLink
-                  to={role === 'officer' ? '/officer/overview' : '/citizen'}
+                  to={authenticatedRole === 'officer' ? '/officer/overview' : '/citizen'}
                   className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-md shadow-cyan-500/20 transition-all flex items-center gap-1.5"
                 >
-                  <span>{role === 'officer' ? 'Open Officer EOC' : 'Open Citizen Portal'}</span>
+                  <span>{authenticatedRole === 'officer' ? 'Open Officer EOC' : 'Open Citizen Portal'}</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </NavLink>
               </div>
             ) : (
               <div className="flex items-center gap-2 sm:gap-3">
+                <NavLink
+                  to="/login?portal=officer"
+                  className="hidden sm:inline-flex px-3 py-2 text-xs font-semibold text-amber-300 hover:text-amber-200 transition-colors"
+                >
+                  Officer Login
+                </NavLink>
                 <NavLink
                   to="/login"
                   className="px-3.5 py-2 text-xs font-bold text-slate-300 hover:text-white transition-colors"
@@ -280,10 +286,10 @@ export const LandingPage: React.FC = () => {
               <div className="w-12 h-12 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center font-black text-lg border border-amber-500/20 group-hover:scale-105 transition-transform">
                 03
               </div>
-              <h3 className="text-lg font-bold text-white">DMC Officer Review</h3>
+              <h3 className="text-lg font-bold text-white">Municipal Officer Review</h3>
               <p className="text-slate-400 text-xs leading-relaxed">
-                Emergency officers review clustered incidents, verify conditions, dispatch municipal
-                sucker trucks, and open drainage sluice gates.
+                In this prototype workflow, response officers review clustered incidents, verify
+                conditions, and coordinate drainage pump dispatches and sluice gate advisories.
               </p>
               <div className="pt-2 text-[11px] text-amber-400 font-semibold flex items-center gap-1">
                 <span>Human In The Loop</span>
@@ -469,8 +475,8 @@ export const LandingPage: React.FC = () => {
               </div>
               <h3 className="text-base font-bold text-white">Zero Fake Approval Protection</h3>
               <p className="text-slate-400 text-xs leading-relaxed">
-                AI evaluation is labeled as assistive evidence. Official disaster verification remains
-                firmly with credentialed DMC personnel.
+                AI evaluation is labeled as assistive evidence. Official flood verification requires
+                explicit review by authorized municipal response officers.
               </p>
             </div>
           </div>

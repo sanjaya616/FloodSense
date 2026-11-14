@@ -3,14 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Droplets,
   Mail,
   Lock,
   ArrowRight,
   ShieldAlert,
+  ShieldCheck,
   User,
   AlertCircle,
   CheckCircle2,
@@ -21,21 +22,69 @@ import {
 } from 'lucide-react';
 import { useFlood, DEMO_CREDENTIALS } from '../../context/FloodContext';
 
-export const LoginPage: React.FC = () => {
-  const { loginWithEmail, loginWithGoogle, requestPasswordReset, switchPersona, dataSourceMode } = useFlood();
-  const navigate = useNavigate();
+type LoginPortalMode = 'citizen' | 'officer';
 
+export const LoginPage: React.FC = () => {
+  const {
+    loginWithEmail,
+    loginWithOfficerEmail,
+    loginWithGoogle,
+    loginWithOfficerGoogle,
+    requestPasswordReset,
+    switchPersona,
+    dataSourceMode,
+    isFirebaseAvailable,
+  } = useFlood();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const routeState = (location.state as {
+    from?: string;
+    portal?: LoginPortalMode;
+    accessDeniedMessage?: string;
+  } | null) || null;
+
+  const initialPortal: LoginPortalMode =
+    searchParams.get('portal') === 'officer' || routeState?.portal === 'officer'
+      ? 'officer'
+      : 'citizen';
+
+  const [loginPortal, setLoginPortal] = useState<LoginPortalMode>(initialPortal);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(
+    routeState?.accessDeniedMessage || null
+  );
 
   // Forgot password inline panel
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [resetFeedback, setResetFeedback] = useState<{ success: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    if (searchParams.get('portal') === 'officer' || routeState?.portal === 'officer') {
+      setLoginPortal('officer');
+    }
+    if (routeState?.accessDeniedMessage) {
+      setLocalError(routeState.accessDeniedMessage);
+    }
+  }, [searchParams, routeState?.portal, routeState?.accessDeniedMessage]);
+
+  const handleSelectPortal = (nextPortal: LoginPortalMode) => {
+    setLoginPortal(nextPortal);
+    setLocalError(null);
+    const nextParams = new URLSearchParams(searchParams);
+    if (nextPortal === 'officer') {
+      nextParams.set('portal', 'officer');
+    } else {
+      nextParams.delete('portal');
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,12 +96,16 @@ export const LoginPage: React.FC = () => {
     setIsSubmitting(true);
 
     try {
-      const result = await loginWithEmail(email, password, rememberMe);
+      const result =
+        loginPortal === 'officer'
+          ? await loginWithOfficerEmail(email, password, rememberMe)
+          : await loginWithEmail(email, password, rememberMe);
+
       if (result.success) {
-        if (result.role === 'officer') {
-          navigate('/officer/overview');
+        if (loginPortal === 'officer' || result.role === 'officer') {
+          navigate('/officer/overview', { replace: true });
         } else {
-          navigate('/citizen');
+          navigate('/citizen', { replace: true });
         }
       } else {
         setLocalError(result.message || 'Login failed. Please verify your credentials.');
@@ -71,31 +124,49 @@ export const LoginPage: React.FC = () => {
   };
 
   const handleQuickDemoCitizen = () => {
-    if (dataSourceMode === 'FIREBASE') return;
+    if (isFirebaseAvailable || dataSourceMode === 'FIREBASE') return;
     switchPersona('citizen');
     navigate('/citizen');
   };
 
   const handleQuickDemoOfficer = () => {
-    if (dataSourceMode === 'FIREBASE') return;
+    if (isFirebaseAvailable || dataSourceMode === 'FIREBASE') return;
     switchPersona('officer');
     navigate('/officer/overview');
   };
 
   const handleGoogleSignIn = async () => {
     setLocalError(null);
-    const res = await loginWithGoogle();
-    if (res.success) {
-      navigate(res.role === 'officer' ? '/officer/overview' : '/citizen');
-    } else if (res.message) {
-      setLocalError(res.message);
+    setIsSubmitting(true);
+    try {
+      const res =
+        loginPortal === 'officer'
+          ? await loginWithOfficerGoogle()
+          : await loginWithGoogle();
+
+      if (res.success) {
+        navigate(
+          loginPortal === 'officer' || res.role === 'officer' ? '/officer/overview' : '/citizen',
+          { replace: true }
+        );
+      } else if (res.message) {
+        setLocalError(res.message);
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
+
+  const isOfficerPortal = loginPortal === 'officer';
 
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col justify-center py-12 sm:px-6 lg:px-8 text-slate-100 font-sans relative overflow-hidden">
       {/* Background ambient glow */}
-      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[350px] bg-cyan-600/10 blur-3xl pointer-events-none rounded-full" />
+      <div
+        className={`absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[350px] blur-3xl pointer-events-none rounded-full transition-colors duration-300 ${
+          isOfficerPortal ? 'bg-amber-500/12' : 'bg-cyan-600/10'
+        }`}
+      />
 
       <div className="sm:mx-auto sm:w-full sm:max-w-md relative z-10 text-center">
         <NavLink to="/" className="inline-flex items-center gap-2.5 group">
@@ -113,17 +184,72 @@ export const LoginPage: React.FC = () => {
         </NavLink>
 
         <h2 className="mt-6 text-xl sm:text-2xl font-black text-white tracking-tight">
-          Sign In to FloodSense
+          {isOfficerPortal ? 'Emergency Officer Sign In' : 'Sign In to FloodSense'}
         </h2>
         <p className="mt-1 text-xs text-slate-400">
-          Access the Citizen Reporting Portal or Officer Operations Center
+          {isOfficerPortal
+            ? 'Restricted access for pre-authorized Municipal Emergency Operations Officers'
+            : 'Access the Citizen Reporting Portal or switch to Emergency Officer Login'}
         </p>
       </div>
 
       <div className="mt-6 sm:mx-auto sm:w-full sm:max-w-md relative z-10 px-4 sm:px-0">
-        <div className="bg-slate-950/80 backdrop-blur-md py-8 px-6 sm:px-8 rounded-3xl border border-slate-800 shadow-2xl space-y-6">
-          {/* Quick Demo Switcher Section (Strict DEMO mode only) */}
-          {dataSourceMode === 'DEMO' ? (
+        <div
+          className={`bg-slate-950/85 backdrop-blur-md py-7 px-6 sm:px-8 rounded-3xl border shadow-2xl space-y-5 transition-colors ${
+            isOfficerPortal ? 'border-amber-500/40' : 'border-slate-800'
+          }`}
+        >
+          {/* Portal Selector Tabs: Citizen Login vs Emergency Officer Login */}
+          <div
+            role="tablist"
+            aria-label="Select FloodSense login portal"
+            className="grid grid-cols-2 gap-1.5 p-1 bg-slate-900 rounded-2xl border border-slate-800"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!isOfficerPortal}
+              data-testid="tab-citizen-login"
+              onClick={() => handleSelectPortal('citizen')}
+              className={`py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                !isOfficerPortal
+                  ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              }`}
+            >
+              <User className="w-3.5 h-3.5 shrink-0" />
+              <span>Citizen Login</span>
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={isOfficerPortal}
+              data-testid="tab-officer-login"
+              onClick={() => handleSelectPortal('officer')}
+              className={`py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                isOfficerPortal
+                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                  : 'text-slate-300 hover:text-amber-300 hover:bg-slate-800/80'
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+              <span>Emergency Officer Login</span>
+            </button>
+          </div>
+
+          {/* Officer Authorization Notice or Firebase Active Notice */}
+          {isOfficerPortal ? (
+            <div className="p-3.5 bg-amber-950/40 border border-amber-700/60 rounded-2xl text-[11px] text-amber-100 flex items-start gap-2.5">
+              <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <p className="font-bold text-amber-300">Pre-Authorized Emergency Officers Only</p>
+                <p className="text-amber-100/85 leading-relaxed">
+                  Officer identity is authenticated by Firebase Authentication and verified on the backend via trusted role claims. Public officer self-registration is disabled.
+                </p>
+              </div>
+            </div>
+          ) : !isFirebaseAvailable && dataSourceMode === 'DEMO' ? (
             <>
               <div className="p-4 bg-slate-900/90 rounded-2xl border border-slate-800 space-y-2.5">
                 <div className="flex items-center justify-between">
@@ -185,14 +311,18 @@ export const LoginPage: React.FC = () => {
           ) : (
             <div className="p-3 bg-cyan-950/40 border border-cyan-800/60 rounded-xl text-[11px] text-cyan-200 flex items-center gap-2">
               <ShieldAlert className="w-4 h-4 text-cyan-400 shrink-0" />
-              <span>Live Firebase Authentication active. Instant demo switching is disabled.</span>
+              <span>Firebase Authentication active. Select Emergency Officer Login above for EOC access.</span>
             </div>
           )}
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
             {localError && (
-              <div className="p-3 bg-red-950/60 border border-red-800/80 rounded-xl text-xs text-red-200 flex items-start gap-2">
+              <div
+                role="alert"
+                data-testid="login-error-alert"
+                className="p-3 bg-red-950/60 border border-red-800/80 rounded-xl text-xs text-red-200 flex items-start gap-2"
+              >
                 <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                 <span>{localError}</span>
               </div>
@@ -200,7 +330,7 @@ export const LoginPage: React.FC = () => {
 
             <div>
               <label htmlFor="login-email" className="block text-xs font-bold text-slate-300 mb-1">
-                Email Address
+                {isOfficerPortal ? 'Authorized Officer Email' : 'Email Address'}
               </label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -208,10 +338,18 @@ export const LoginPage: React.FC = () => {
                   id="login-email"
                   type="email"
                   required
-                  placeholder="e.g. nimalka.senanayake@gmail.com or officer@dmc.gov.lk"
+                  placeholder={
+                    isOfficerPortal
+                      ? 'e.g. officer@municipality.gov.lk'
+                      : 'e.g. nimalka.senanayake@gmail.com'
+                  }
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2.5 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
+                  className={`w-full pl-9 pr-3 py-2.5 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 ${
+                    isOfficerPortal
+                      ? 'focus:ring-amber-500/20 focus:border-amber-500'
+                      : 'focus:ring-cyan-500/20 focus:border-cyan-500'
+                  }`}
                 />
               </div>
             </div>
@@ -242,7 +380,11 @@ export const LoginPage: React.FC = () => {
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-9 pr-10 py-2.5 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
+                  className={`w-full pl-9 pr-10 py-2.5 text-xs bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 ${
+                    isOfficerPortal
+                      ? 'focus:ring-amber-500/20 focus:border-amber-500'
+                      : 'focus:ring-cyan-500/20 focus:border-cyan-500'
+                  }`}
                 />
                 <button
                   type="button"
@@ -269,13 +411,22 @@ export const LoginPage: React.FC = () => {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-extrabold text-xs shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              data-testid="login-submit-button"
+              className={`w-full py-3 px-4 rounded-xl font-extrabold text-xs shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
+                isOfficerPortal
+                  ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 shadow-amber-500/20'
+                  : 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 shadow-cyan-500/25'
+              }`}
             >
               {isSubmitting ? (
-                <span>Verifying credentials...</span>
+                <span>
+                  {isOfficerPortal ? 'Verifying Officer Authorization...' : 'Verifying credentials...'}
+                </span>
               ) : (
                 <>
-                  <span>Sign In to Account</span>
+                  <span>
+                    {isOfficerPortal ? 'Sign In to Emergency Officer Portal' : 'Sign In to Citizen Account'}
+                  </span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
@@ -333,8 +484,12 @@ export const LoginPage: React.FC = () => {
           {/* Google Firebase Sign In */}
           <button
             type="button"
+            disabled={isSubmitting}
+            data-testid="google-signin-button"
             onClick={handleGoogleSignIn}
-            className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center justify-center gap-2.5 transition-colors cursor-pointer"
+            className={`w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border text-xs font-semibold flex items-center justify-center gap-2.5 transition-colors cursor-pointer disabled:opacity-50 ${
+              isOfficerPortal ? 'border-amber-500/40 hover:border-amber-400/60' : 'border-slate-700'
+            }`}
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24">
               <path
@@ -354,15 +509,36 @@ export const LoginPage: React.FC = () => {
                 d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
               />
             </svg>
-            <span>Continue with Google Account</span>
+            <span>
+              {isOfficerPortal
+                ? 'Sign in as Emergency Officer with Google'
+                : 'Continue with Google Account'}
+            </span>
           </button>
 
-          <div className="text-center text-xs text-slate-400">
-            <span>Don't have an account yet? </span>
-            <NavLink to="/register" className="text-cyan-400 font-bold hover:underline">
-              Create Citizen Account
-            </NavLink>
-          </div>
+          {isOfficerPortal ? (
+            <div className="text-center text-xs text-slate-400">
+              <span>Citizen contributor? </span>
+              <button
+                type="button"
+                onClick={() => handleSelectPortal('citizen')}
+                className="text-cyan-400 font-bold hover:underline cursor-pointer"
+              >
+                Switch to Citizen Login
+              </button>
+              <span> or </span>
+              <NavLink to="/register" className="text-cyan-400 font-bold hover:underline">
+                Register Citizen Account
+              </NavLink>
+            </div>
+          ) : (
+            <div className="text-center text-xs text-slate-400">
+              <span>Don't have an account yet? </span>
+              <NavLink to="/register" className="text-cyan-400 font-bold hover:underline">
+                Create Citizen Account
+              </NavLink>
+            </div>
+          )}
         </div>
       </div>
     </div>

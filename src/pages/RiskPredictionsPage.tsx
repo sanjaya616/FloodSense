@@ -120,10 +120,16 @@ export const RiskPredictionsPage: React.FC = () => {
               <span>3-Hour Rainfall Forecast</span>
             </div>
             <span className="text-2xl font-extrabold text-cyan-700 font-mono">
-              {weather.expected3hRainfallMm}
-              <span className="text-xs text-slate-500 font-sans font-normal ml-1">mm</span>
+              {weather.expected3hRainfallMm !== null ? weather.expected3hRainfallMm : 'N/A'}
+              {weather.expected3hRainfallMm !== null && (
+                <span className="text-xs text-slate-500 font-sans font-normal ml-1">mm</span>
+              )}
             </span>
-            <p className="text-[10px] text-slate-400 mt-0.5">Expected cumulative waterload</p>
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              {weather.expected3hRainfallMm !== null
+                ? 'Expected cumulative waterload'
+                : '3h forecast telemetry unavailable'}
+            </p>
           </div>
 
           <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-100">

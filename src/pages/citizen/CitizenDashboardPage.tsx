@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
-import { NavLink } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   PlusCircle,
   FileText,
@@ -20,13 +20,47 @@ import {
   Bell,
   Flame,
   ImageOff,
+  X,
 } from 'lucide-react';
 import { useFlood } from '../../context/FloodContext';
 import { RiskBadge } from '../../components/common/RiskBadge';
 import { FloodMap } from '../../components/map/FloodMap';
 
 export const CitizenDashboardPage: React.FC = () => {
-  const { userProfile, myReports, weather, hotspots, reports, notifications } = useFlood();
+  const { userProfile, myReports, weather, hotspots, reports, notifications, logout } = useFlood();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const routeState = (location.state as {
+    accessDenied?: boolean;
+    deniedFrom?: string;
+    accessDeniedMessage?: string;
+  } | null) || null;
+
+  const [accessDeniedNotice, setAccessDeniedNotice] = useState<{
+    message: string;
+    deniedFrom?: string;
+  } | null>(() =>
+    routeState?.accessDenied
+      ? {
+          message:
+            routeState.accessDeniedMessage ||
+            'Access Denied: Emergency Officer authorization is required to view Officer Operations routes.',
+          deniedFrom: routeState.deniedFrom,
+        }
+      : null
+  );
+
+  useEffect(() => {
+    if (routeState?.accessDenied) {
+      setAccessDeniedNotice({
+        message:
+          routeState.accessDeniedMessage ||
+          'Access Denied: Emergency Officer authorization is required to view Officer Operations routes.',
+        deniedFrom: routeState.deniedFrom,
+      });
+    }
+  }, [routeState?.accessDenied, routeState?.accessDeniedMessage, routeState?.deniedFrom]);
 
   const underReviewCount = myReports.filter(
     (r) =>
@@ -48,6 +82,59 @@ export const CitizenDashboardPage: React.FC = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8 font-sans">
+      {accessDeniedNotice && (
+        <div
+          role="alert"
+          data-testid="citizen-access-denied-banner"
+          className="p-4 sm:p-5 bg-red-50 border-2 border-red-300 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+        >
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-red-100 text-red-700 flex items-center justify-center shrink-0">
+              <ShieldAlert className="w-5 h-5" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-red-200 text-red-900">
+                  Access Denied · 403
+                </span>
+                {accessDeniedNotice.deniedFrom && (
+                  <span className="text-[11px] font-mono text-red-700">
+                    Blocked route: {accessDeniedNotice.deniedFrom}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs sm:text-sm font-bold text-red-950">
+                {accessDeniedNotice.message}
+              </p>
+              <p className="text-[11px] text-red-800">
+                Signed in as <strong>{userProfile.email}</strong> (Citizen account). You have been redirected back to the Citizen Portal.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+            <button
+              type="button"
+              onClick={async () => {
+                await logout();
+                navigate('/login?portal=officer');
+              }}
+              className="px-3.5 py-2 rounded-xl bg-red-700 hover:bg-red-800 text-white text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
+            >
+              Officer Sign In
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss access denied alert"
+              onClick={() => setAccessDeniedNotice(null)}
+              className="p-2 rounded-xl text-red-700 hover:bg-red-100 transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Welcome & Persona Banner */}
       <div className="bg-gradient-to-r from-cyan-900 via-slate-900 to-blue-950 rounded-3xl p-6 sm:p-8 text-white border border-cyan-800/40 shadow-xl relative overflow-hidden">
         <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-cyan-500/10 blur-3xl pointer-events-none rounded-full" />
@@ -64,8 +151,8 @@ export const CitizenDashboardPage: React.FC = () => {
               Welcome back, {userProfile.name}
             </h1>
             <p className="text-slate-300 text-xs sm:text-sm max-w-2xl leading-relaxed">
-              Your real-time flood reports provide critical ground-truth data for the Disaster
-              Management Centre (DMC) and help protect motorists in Colombo.
+              Your real-time flood reports provide critical ground-truth data for our proposed Municipal
+              Flood Operations Center and help protect motorists in Colombo.
             </p>
           </div>
 
@@ -96,7 +183,7 @@ export const CitizenDashboardPage: React.FC = () => {
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs">
           <div className="flex items-center justify-between text-amber-700 text-xs font-semibold">
-            <span>Under DMC Review</span>
+            <span>Under Officer Review</span>
             <Clock className="w-4 h-4 text-amber-600" />
           </div>
           <p className="text-2xl sm:text-3xl font-black text-amber-700 font-mono mt-2">
@@ -139,7 +226,7 @@ export const CitizenDashboardPage: React.FC = () => {
           </h2>
           <p className="text-xs sm:text-sm text-slate-600 max-w-xl leading-relaxed">
             Snap a photo, confirm GPS coordinates, and submit. Our multimodal AI performs early
-            depth classification, and DMC officers dispatch pumps to open clogged culverts.
+            depth classification, and municipal response officers triage culvert and drainage dispatches.
           </p>
           <div className="flex flex-wrap items-center justify-center lg:justify-start gap-4 text-xs font-semibold text-slate-500 pt-1">
             <span className="flex items-center gap-1.5">
@@ -284,7 +371,9 @@ export const CitizenDashboardPage: React.FC = () => {
                 <div className="p-3 bg-slate-50 rounded-xl">
                   <span className="text-[11px] text-slate-500">Next 3 Hours</span>
                   <p className="text-xl font-black text-blue-700 font-mono mt-0.5">
-                    {weather.expected3hRainfallMm} mm
+                    {weather.expected3hRainfallMm !== null
+                      ? `${weather.expected3hRainfallMm} mm`
+                      : 'Unavailable'}
                   </p>
                 </div>
               </div>
@@ -295,8 +384,18 @@ export const CitizenDashboardPage: React.FC = () => {
                   <span>Active Safety Directive</span>
                 </span>
                 <p className="leading-relaxed text-[11px]">
-                  Heavy localized runoff expected in Kolonnawa and Maradana canal corridors. Avoid
-                  parking in basement garages or low-lying underpasses.
+                  {(() => {
+                    const highAreas = Array.from(
+                      new Set(hotspots.filter((h) => h.riskLevel === 'HIGH').map((h) => h.area))
+                    );
+                    if (highAreas.length > 0) {
+                      return `Active HIGH risk clusters in ${highAreas.join(', ')}. Avoid low-lying underpasses and stalled canal corridors.`;
+                    }
+                    if (weather.expected3hRainfallMm !== null && weather.expected3hRainfallMm > 10) {
+                      return `Moderate-to-heavy rainfall forecast (${weather.expected3hRainfallMm} mm / 3h). Monitor nearby canal corridors before commuting.`;
+                    }
+                    return 'No HIGH risk flood clusters currently reported. Continue following local municipal advisories.';
+                  })()}
                 </p>
               </div>
             </div>

@@ -9,8 +9,10 @@
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "test": "tsx --test src/utils/floodLogic.test.ts server.test.ts",
-    "lint": "tsc --noEmit"
+    "test": "tsx --test src/utils/floodLogic.test.ts server.test.ts src/services/floodService.test.ts scripts/officerBootstrapCore.test.ts",
+    "lint": "tsc --noEmit",
+    "officer:authorize": "tsx scripts/authorize-officer.ts",
+    "officer:bootstrap": "tsx scripts/authorize-officer.ts --bootstrap-first"
   },
   "dependencies": {
     "@google/genai": "^2.32.0",

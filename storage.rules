@@ -33,12 +33,14 @@ service firebase.storage {
     }
 
     // Private report photographs: readable ONLY by the report owner or authorized officers
+    // Upload path matches users' authenticated UID under reports/{userId}/{fileName}
     match /reports/{userId}/{fileName} {
       allow read: if isOwner(userId) || isOfficer();
 
       allow create: if isOwner(userId)
         && isValidFileName(fileName)
-        && isValidImage();
+        && isValidImage()
+        && request.resource.size > 32;
 
       allow delete: if isOwner(userId) || isOfficer();
 
