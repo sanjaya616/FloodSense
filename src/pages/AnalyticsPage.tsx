@@ -36,53 +36,21 @@ import {
 } from 'recharts';
 
 export const AnalyticsPage: React.FC = () => {
-  const { reports, hotspots, getAnalytics, weather } = useFlood();
+  const { hotspots, getAnalytics } = useFlood();
   const [timeRange, setTimeRange] = useState<'24h' | '7d' | '30d' | 'all'>('24h');
 
-  // Dynamically compute metrics from active dataset
+  // Dynamically compute all metrics from active dataset
   const analytics = getAnalytics(timeRange);
   const totalActiveHotspots = hotspots.length;
   const highRiskHotspots = hotspots.filter((h) => h.riskLevel === 'HIGH').length;
 
-  // Compute dynamic timeseries based on selected time filter and active reports
-  const generateDynamicTimeseries = () => {
-    if (timeRange === '24h') {
-      const hours = ['04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', 'Current'];
-      return hours.map((h, idx) => ({
-        label: h,
-        reports: Math.max(0, Math.round((analytics.totalReports / hours.length) * (idx + 0.5))),
-        rainfallMm: Number((weather.currentRainfallMm * (0.6 + (idx / 10))).toFixed(1)),
-      }));
-    }
-
-    if (timeRange === '7d') {
-      const days = ['Day -6', 'Day -5', 'Day -4', 'Day -3', 'Day -2', 'Yesterday', 'Today'];
-      return days.map((d, idx) => ({
-        label: d,
-        reports: Math.max(1, Math.round((analytics.totalReports / days.length) * (idx + 0.8))),
-        rainfallMm: Number((weather.expected3hRainfallMm * (0.4 + (idx / 8))).toFixed(1)),
-      }));
-    }
-
-    if (timeRange === '30d') {
-      const weeks = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
-      return weeks.map((w, idx) => ({
-        label: w,
-        reports: Math.max(4, Math.round((analytics.totalReports / weeks.length) * (idx + 0.9))),
-        rainfallMm: Number((weather.expected3hRainfallMm * (1.2 + idx * 0.8)).toFixed(1)),
-      }));
-    }
-
-    // All
-    const sectors = ['Historical Batch A', 'Historical Batch B', 'Current Monsoon Cycle'];
-    return sectors.map((s, idx) => ({
-      label: s,
-      reports: Math.round(analytics.totalReports * (0.3 + idx * 0.35)),
-      rainfallMm: Math.round(weather.expected3hRainfallMm * (0.8 + idx * 0.4)),
-    }));
-  };
-
-  const dynamicTimeseries = generateDynamicTimeseries();
+  // Real timestamp-bucketed timeseries from calculateDynamicAnalytics
+  const dynamicTimeseries = analytics.reportVolumeOverTime.map((pt) => ({
+    label: pt.label,
+    reports: pt.total,
+    verified: pt.verified,
+    highRisk: pt.highRisk,
+  }));
 
   // Status breakdown array for charts
   const statusChartData = Object.entries(analytics.statusCounts).map(([status, count]) => ({
@@ -129,35 +97,44 @@ export const AnalyticsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Metric Highlights Strip (All dynamically computed) */}
+      {/* Metric Highlights Strip (All dynamically computed with explicit missing-data honesty) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
           <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-            Avg Time to Alert / Verification
+            Avg Review / Alert Time
           </span>
           <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-extrabold text-slate-900 font-mono">
-              {analytics.avgProcessingMinutes}
+            <span className="text-2xl font-extrabold text-slate-900 font-mono">
+              {analytics.avgReviewMinutes !== null ? `${analytics.avgReviewMinutes} min` : 'Insufficient Timestamps'}
             </span>
-            <span className="text-sm font-semibold text-slate-500">minutes</span>
           </div>
-          <p className="text-xs text-emerald-600 mt-2 font-medium">
-            Calculated from submission to verification timestamp
+          <p
+            className={`text-xs mt-2 font-medium ${
+              analytics.avgAlertMinutes !== null ? 'text-emerald-700' : 'text-slate-500'
+            }`}
+          >
+            Alert gen:{' '}
+            {analytics.avgAlertMinutes !== null
+              ? `${analytics.avgAlertMinutes} min avg`
+              : 'No alert timestamp yet'}
           </p>
         </div>
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
           <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-            Total Influx ({timeRange.toUpperCase()})
+            Reports ({timeRange.toUpperCase()}) · Unique vs Dup
           </span>
           <div className="flex items-baseline gap-2">
             <span className="text-3xl font-extrabold text-slate-900 font-mono">
               {analytics.totalReports}
             </span>
-            <span className="text-sm font-semibold text-slate-500">reports</span>
+            <span className="text-xs font-semibold text-slate-500">
+              ({analytics.uniqueReportCount} unique · {analytics.duplicateReportCount} dup)
+            </span>
           </div>
           <p className="text-xs text-cyan-700 mt-2 font-medium">
-            {analytics.verifiedPercentage}% verified by officers
+            {analytics.verifiedCount} verified · {analytics.unverifiedCount} pending/unverified (
+            {analytics.verifiedPercentage}%)
           </p>
         </div>
 
@@ -171,74 +148,92 @@ export const AnalyticsPage: React.FC = () => {
             </span>
             <span className="text-sm font-semibold text-slate-500">clusters</span>
           </div>
-          <p className="text-xs text-slate-500 mt-2">{highRiskHotspots} High-Risk Hazard Zones</p>
+          <p className="text-xs text-slate-500 mt-2">
+            {highRiskHotspots} High ·{' '}
+            {analytics.hotspotSeverityDistribution.find((h) => h.name === 'MEDIUM')?.count ?? 0} Med ·{' '}
+            {analytics.hotspotSeverityDistribution.find((h) => h.name === 'LOW')?.count ?? 0} Low
+          </p>
         </div>
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
           <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-            High Severity Signals
+            Data Completeness &amp; Freshness
           </span>
           <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-extrabold text-red-600 font-mono">
-              {analytics.highRisk}
+            <span className="text-2xl font-extrabold text-slate-900 font-mono">
+              {analytics.dataCompleteness.reportsWithValidTimestamps}/{analytics.totalReports}
             </span>
-            <span className="text-sm font-semibold text-slate-500">high risk</span>
+            <span className="text-xs font-semibold text-slate-500">timestamped</span>
           </div>
-          <p className="text-xs text-slate-500 mt-2 font-mono">
-            {analytics.mediumRisk} Medium · {analytics.lowRisk} Low
+          <p className="text-[11px] text-slate-500 mt-2 font-mono flex flex-wrap items-center gap-x-1.5">
+            <span>{analytics.dataCompleteness.reportsWithCoordinates} geo</span>
+            <span>·</span>
+            <span>{analytics.dataCompleteness.reportsWithImages} photo</span>
+            <span>·</span>
+            <span className="whitespace-nowrap">
+              {new Date(analytics.freshnessTimestamp).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </span>
           </p>
         </div>
       </div>
 
       {/* Primary Analytics Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Chart 1: Reports Over Time (Line) */}
+        {/* Chart 1: Reports Over Time (Bucketed directly from report timestamps) */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-base font-bold text-slate-900">1. Report Volume & Rainfall Correlation</h3>
+              <h3 className="text-base font-bold text-slate-900">1. Report Volume &amp; Verification Trend</h3>
               <p className="text-xs text-slate-500">
-                Surge analysis correlated with precipitation density ({timeRange.toUpperCase()} view)
+                Real timestamp-bucketed submissions ({timeRange.toUpperCase()} window)
               </p>
             </div>
             <span className="text-[10px] font-mono bg-cyan-50 text-cyan-800 px-2 py-0.5 rounded font-bold">
-              Dynamic Filter
+              Timestamp Aggregation
             </span>
           </div>
 
           <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={dynamicTimeseries}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-                <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748B' }} />
-                <YAxis tick={{ fontSize: 11, fill: '#64748B' }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#1E293B',
-                    borderRadius: '8px',
-                    color: '#FFF',
-                    fontSize: '11px',
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: '11px' }} />
-                <Line
-                  type="monotone"
-                  dataKey="reports"
-                  stroke="#06B6D4"
-                  strokeWidth={3}
-                  dot={{ r: 4, fill: '#06B6D4' }}
-                  name="Citizen Flood Reports"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="rainfallMm"
-                  stroke="#8B5CF6"
-                  strokeWidth={2}
-                  strokeDasharray="4 4"
-                  name="Rainfall Volume (mm)"
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {dynamicTimeseries.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-xs text-slate-400">
+                No timestamped reports available in this time window.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={dynamicTimeseries}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748B' }} />
+                  <YAxis tick={{ fontSize: 11, fill: '#64748B' }} allowDecimals={false} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#1E293B',
+                      borderRadius: '8px',
+                      color: '#FFF',
+                      fontSize: '11px',
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '11px' }} />
+                  <Line
+                    type="monotone"
+                    dataKey="reports"
+                    stroke="#06B6D4"
+                    strokeWidth={3}
+                    dot={{ r: 4, fill: '#06B6D4' }}
+                    name="Total Reports"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="verified"
+                    stroke="#10B981"
+                    strokeWidth={2}
+                    name="Verified Reports"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
 
@@ -353,6 +348,76 @@ export const AnalyticsPage: React.FC = () => {
                 <Bar dataKey="count" fill="#06B6D4" name="Reports in Stage" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* Rainfall vs Report Volume Correlation & Hotspot Distribution */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">5. Rainfall vs Report Volume Correlation</h3>
+              <p className="text-xs text-slate-500">Observed rainfall vs hotspot report density</p>
+            </div>
+            <span className="text-[10px] font-mono bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
+              {analytics.hasRainfallCorrelationData ? 'Paired Observations' : 'Insufficient Pairs'}
+            </span>
+          </div>
+          <div className="h-56">
+            {analytics.hasRainfallCorrelationData ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={analytics.rainfallVsVolumeCorrelation}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                  <XAxis dataKey="bucket" tick={{ fontSize: 10, fill: '#64748B' }} />
+                  <YAxis tick={{ fontSize: 10, fill: '#64748B' }} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#1E293B',
+                      borderRadius: '8px',
+                      color: '#FFF',
+                      fontSize: '11px',
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '11px' }} />
+                  <Bar dataKey="avgRainfallMm" fill="#8B5CF6" name="Avg 3h Rainfall (mm)" />
+                  <Bar dataKey="reportCount" fill="#06B6D4" name="Unique Reports" />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-xs text-slate-400 text-center px-6">
+                Insufficient matched rainfall-forecast and report pairs for correlation display.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">6. Verified vs Unverified &amp; Hotspot Split</h3>
+              <p className="text-xs text-slate-500">Audit summary across reports and active clusters</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Verification Split</span>
+              {analytics.verifiedVsUnverified.map((v) => (
+                <div key={v.name} className="flex justify-between py-1">
+                  <span className="text-slate-700 font-medium">{v.name}</span>
+                  <span className="font-mono font-bold text-slate-900">{v.count}</span>
+                </div>
+              ))}
+            </div>
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Unique vs Duplicate</span>
+              {analytics.uniqueVsDuplicate.map((u) => (
+                <div key={u.name} className="flex justify-between py-1">
+                  <span className="text-slate-700 font-medium">{u.name}</span>
+                  <span className="font-mono font-bold text-slate-900">{u.count}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>

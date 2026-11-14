@@ -124,6 +124,11 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
             >
               {report.incidentStatus || report.verificationStatus}
             </span>
+            {report.isDuplicate && (
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-800">
+                Duplicate of {report.duplicateOfReportId || 'prior report'}
+              </span>
+            )}
           </div>
           <button
             type="button"
@@ -269,8 +274,28 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
                   {aiDetails?.method || 'AI Image Verification Assessment'}
                 </span>
               </div>
-              <span className="text-xs font-mono font-bold text-cyan-800 bg-cyan-100 px-2 py-0.5 rounded border border-cyan-300">
-                Confidence: {report.aiConfidence ?? aiDetails?.confidence ?? 92.4}%
+              <span
+                className={`text-xs font-mono font-bold px-2 py-0.5 rounded border ${
+                  report.aiStatus === 'FAILED'
+                    ? 'text-red-800 bg-red-100 border-red-300'
+                    : report.aiStatus === 'NOT_RUN'
+                    ? 'text-slate-700 bg-slate-100 border-slate-300'
+                    : report.aiStatus === 'SIMULATED'
+                    ? 'text-amber-900 bg-amber-100 border-amber-300'
+                    : 'text-cyan-800 bg-cyan-100 border-cyan-300'
+                }`}
+              >
+                {(() => {
+                  const aiConf = report.aiConfidence ?? aiDetails?.confidence ?? null;
+                  if (report.aiStatus === 'FAILED') return 'AI FAILED';
+                  if (report.aiStatus === 'NOT_RUN' || (!report.imageUrl && aiConf == null)) {
+                    return 'AI NOT RUN';
+                  }
+                  if (report.aiStatus === 'SIMULATED') {
+                    return aiConf != null ? `Simulated: ${aiConf}%` : 'Simulated';
+                  }
+                  return aiConf != null ? `Confidence: ${aiConf}%` : 'Confidence: N/A';
+                })()}
               </span>
             </div>
 
@@ -278,7 +303,10 @@ export const IncidentDetailsModal: React.FC<IncidentDetailsModalProps> = ({
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-slate-600">Classification Hypothesis:</span>
                 <span className="font-bold text-slate-900">
-                  {report.aiClassification ?? aiDetails?.aiAssessment ?? aiDetails?.assessment ?? 'Street Waterlogging'}
+                  {report.aiClassification ??
+                    aiDetails?.aiAssessment ??
+                    aiDetails?.assessment ??
+                    (report.aiStatus === 'NOT_RUN' ? 'AI Not Run (No Image)' : 'Under Review')}
                 </span>
               </div>
 

@@ -31,8 +31,8 @@ import { FloodMap } from '../../components/map/FloodMap';
 import { RiskBadge } from '../../components/common/RiskBadge';
 
 export const LandingPage: React.FC = () => {
-  const { hotspots, reports, weather, switchPersona, isAuthenticated, role } = useFlood();
-  const navigate = useNavigate();
+  const { hotspots, reports, weather, isAuthenticated, role, getAnalytics } = useFlood();
+  const analytics = getAnalytics('all');
 
   // Pick top 4 hotspots for the preview cards
   const activeHotspots = hotspots.slice(0, 4);
@@ -177,9 +177,11 @@ export const LandingPage: React.FC = () => {
                 </div>
                 <div>
                   <p className="text-xl sm:text-2xl font-black text-emerald-400 font-mono">
-                    &lt; 3 mins
+                    {analytics.avgReviewMinutes !== null ? `${analytics.avgReviewMinutes} min` : `${analytics.verifiedPercentage}%`}
                   </p>
-                  <p className="text-slate-400 text-xs">AI Early Triage</p>
+                  <p className="text-slate-400 text-xs">
+                    {analytics.avgReviewMinutes !== null ? 'Avg Officer Triage Time' : 'Verified Report Ratio'}
+                  </p>
                 </div>
               </div>
             </div>
@@ -195,7 +197,7 @@ export const LandingPage: React.FC = () => {
                     </span>
                   </div>
                   <span className="text-[11px] font-mono text-cyan-400 font-semibold">
-                    {weather.currentRainfallMm} mm/h ({weather.isLive ? 'Live Radar' : 'Simulated Weather'})
+                    {weather.currentRainfallMm} mm/h ({weather.isLive ? 'Open-Meteo Forecast' : 'Simulated Weather'})
                   </span>
                 </div>
 
@@ -295,8 +297,8 @@ export const LandingPage: React.FC = () => {
               </div>
               <h3 className="text-lg font-bold text-white">Community Alert</h3>
               <p className="text-slate-400 text-xs leading-relaxed">
-                Live map advisories update instantly. Motorists reroute away from dangerous underpasses,
-                and high-risk events anchor to blockchain for auditability.
+                Map advisories update dynamically. Motorists avoid submerged underpasses,
+                and high-risk declarations anchor to a prototype SHA-256 hash-chain for tamper-evident auditability.
               </p>
               <div className="pt-2 text-[11px] text-emerald-400 font-semibold flex items-center gap-1">
                 <span>Smarter Warnings</span>
@@ -375,30 +377,33 @@ export const LandingPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Right Card: Citizen Quote / Feature Card */}
+            {/* Right Card: Demonstration Scenario Walkthrough */}
             <div className="lg:col-span-6 bg-slate-950/60 p-8 rounded-3xl border border-slate-800 space-y-6">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
                   <Users className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-white text-base">Crowdsourced Early Warning</h3>
-                  <p className="text-xs text-slate-400">Built for citizens across the Colombo Western Province</p>
+                  <h3 className="font-bold text-white text-base">Demonstration Case Walkthrough</h3>
+                  <p className="text-xs text-slate-400">Sample workflow inside the academic Colombo dataset</p>
                 </div>
               </div>
 
               <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 text-xs space-y-3">
                 <div className="flex items-center justify-between text-slate-400">
-                  <span className="font-semibold text-slate-200">Incident REP-101 (Maradana)</span>
-                  <span className="font-mono text-[10px] text-cyan-400">7 mins response</span>
+                  <span className="font-semibold text-slate-200">Scenario #REP-101 · Maradana Sector</span>
+                  <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    Demonstration Data
+                  </span>
                 </div>
-                <p className="text-slate-300 italic">
-                  "Reported water rising past bus tire levels near Technical College junction. Within 15 minutes,
-                  traffic was diverted away from the railway underpass, preventing dozens of stalled cars."
+                <p className="text-slate-300 leading-relaxed">
+                  In the seeded Colombo demonstration scenario, multiple citizen submissions within a 500m radius
+                  and 2-hour window cluster at Maradana Junction (HS-042). Combined with &gt;20 mm/3h forecast rain,
+                  deterministic threshold rules elevate hotspot risk to HIGH for officer verification.
                 </p>
                 <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px] text-slate-400">
-                  <span>Dinuka Senanayake • Resident</span>
-                  <span className="text-emerald-400 font-semibold">Verified by DMC Officer</span>
+                  <span>Workflow: Citizen Report → AI Screening → Officer Sign-Off</span>
+                  <span className="text-cyan-400 font-semibold">Prototype Model</span>
                 </div>
               </div>
 

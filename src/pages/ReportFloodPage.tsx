@@ -20,27 +20,32 @@ import {
   Lock,
   AlertCircle,
 } from 'lucide-react';
-import { simulateAiVerification, validateCoordinates } from '../utils/floodLogic';
+import { validateCoordinates, AiStatus } from '../utils/floodLogic';
+import {
+  validateAndSanitizeImageFile,
+  createSubmissionRequestId,
+} from '../utils/imageUtils';
 import { FLOOD_IMAGES } from '../assets/images';
 
 export const ReportFloodPage: React.FC = () => {
-  const { addReport, dbOperationStatus } = useFlood();
+  const { addReport, dbOperationStatus, userProfile } = useFlood();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Form state
+  // Form state (no silent area/coordinate prefill)
   const [locationName, setLocationName] = useState('');
-  const [area, setArea] = useState<'Maradana' | 'Wellawatte' | 'Borella' | 'Kolonnawa' | 'Dematagoda' | 'Nugegoda'>('Maradana');
-  const [lat, setLat] = useState<number>(6.9271);
-  const [lng, setLng] = useState<number>(79.8653);
+  const [area, setArea] = useState<string>('');
+  const [latInput, setLatInput] = useState<string>('');
+  const [lngInput, setLngInput] = useState<string>('');
   const [waterLevel, setWaterLevel] = useState<'Low' | 'Moderate' | 'High' | 'Severe'>('Moderate');
   const [roadAccessibility, setRoadAccessibility] = useState<'Open' | 'Partially Blocked' | 'Completely Blocked'>('Partially Blocked');
   const [floodType, setFloodType] = useState<'Street Waterlogging' | 'Flash Flood' | 'Canal Overflow' | 'Drainage Blockage'>('Street Waterlogging');
   const [description, setDescription] = useState('');
-  const [reporterName, setReporterName] = useState('');
-  const [reporterPhone, setReporterPhone] = useState('');
+  const [reporterName, setReporterName] = useState(userProfile.name || '');
+  const [reporterPhone, setReporterPhone] = useState(userProfile.phone || '');
+  const [submissionRequestId, setSubmissionRequestId] = useState<string>(() => createSubmissionRequestId());
 
-  // Image Upload state & validation (Starts EMPTY as requested in Phase 3)
+  // Image Upload state & validation (Starts EMPTY)
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
@@ -48,6 +53,7 @@ export const ReportFloodPage: React.FC = () => {
   const [imageMeta, setImageMeta] = useState<{ name: string; size: string } | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isProcessingImage, setIsProcessingImage] = useState(false);
 
   // GPS state
   const [isLocating, setIsLocating] = useState(false);
@@ -61,12 +67,17 @@ export const ReportFloodPage: React.FC = () => {
     id: string;
     hotspotId: string;
     method: string;
-    aiConfidence: number;
+    aiStatus: AiStatus;
+    aiConfidence: number | null;
     aiClassification: string;
     explanation: string;
     isDuplicate?: boolean;
     duplicateOfId?: string;
   } | null>(null);
+
+  const parsedLat = Number.parseFloat(latInput);
+  const parsedLng = Number.parseFloat(lngInput);
+  const coordsAreValid = latInput.trim() !== '' && lngInput.trim() !== '' && validateCoordinates(parsedLat, parsedLng);
 
   // Area preset coordinates
   const areaCoordinates: Record<string, { lat: number; lng: number }> = {
@@ -78,45 +89,33 @@ export const ReportFloodPage: React.FC = () => {
     Nugegoda: { lat: 6.8710, lng: 79.8980 },
   };
 
-  const handleAreaChange = (newArea: typeof area) => {
+  const handleAreaChange = (newArea: string) => {
     setArea(newArea);
+    setGpsSuccess(false);
     if (areaCoordinates[newArea]) {
-      setLat(areaCoordinates[newArea].lat);
-      setLng(areaCoordinates[newArea].lng);
+      setLatInput(areaCoordinates[newArea].lat.toFixed(5));
+      setLngInput(areaCoordinates[newArea].lng.toFixed(5));
     }
   };
 
-  const processFile = (file: File) => {
+  const processFile = async (file: File) => {
     setImageError(null);
-
-    // Validate type (JPG, JPEG, PNG, WEBP)
-    const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
-    if (!validTypes.includes(file.type.toLowerCase())) {
-      setImageError('Invalid file format. Please upload JPG, PNG, or WEBP images only.');
-      return;
+    setIsProcessingImage(true);
+    try {
+      const sanitized = await validateAndSanitizeImageFile(file);
+      setSelectedFile(sanitized.file);
+      setImageMimeType(sanitized.mimeType);
+      setImageMeta({
+        name: file.name,
+        size: `${sanitized.sizeLabel}${sanitized.exifStripped ? ' · EXIF stripped' : ''}`,
+      });
+      setImagePreview(sanitized.dataUrl);
+      setImageBase64(sanitized.dataUrl);
+    } catch (err: any) {
+      setImageError(err?.message || 'Unable to process selected image file.');
+    } finally {
+      setIsProcessingImage(false);
     }
-
-    // Validate size (max 5MB for actual uploads as required by Phase 3)
-    const maxSize = 5 * 1024 * 1024;
-    if (file.size > maxSize) {
-      setImageError('File size exceeds the 5MB upload limit. Please select a smaller photograph.');
-      return;
-    }
-
-    setSelectedFile(file);
-    setImageMimeType(file.type.toLowerCase());
-    setImageMeta({
-      name: file.name,
-      size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
-    });
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      setImagePreview(dataUrl);
-      setImageBase64(dataUrl);
-    };
-    reader.readAsDataURL(file);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -147,15 +146,15 @@ export const ReportFloodPage: React.FC = () => {
 
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setLat(Number(pos.coords.latitude.toFixed(5)));
-        setLng(Number(pos.coords.longitude.toFixed(5)));
+        setLatInput(pos.coords.latitude.toFixed(5));
+        setLngInput(pos.coords.longitude.toFixed(5));
         setIsLocating(false);
         setGpsSuccess(true);
       },
       () => {
         setIsLocating(false);
         setGpsError(
-          'Location access permission was not granted. Please select your sector manually below.'
+          'Location access permission was not granted. Please select your sector or enter coordinates manually below.'
         );
       },
       { timeout: 10000, enableHighAccuracy: true }
@@ -183,15 +182,7 @@ export const ReportFloodPage: React.FC = () => {
     }
   };
 
-  // Preview AI heuristic
-  const aiPreview = simulateAiVerification({
-    waterLevel,
-    floodType,
-    hasImage: !!imagePreview,
-    description: description || 'Water accumulation observation',
-  });
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent, omitPhoto = false) => {
     e.preventDefault();
     setSubmissionError(null);
 
@@ -200,8 +191,13 @@ export const ReportFloodPage: React.FC = () => {
       return;
     }
 
-    if (!validateCoordinates(lat, lng)) {
-      setSubmissionError('Invalid latitude or longitude coordinates provided.');
+    if (!area.trim()) {
+      setSubmissionError('Please select a Colombo Municipal Sector.');
+      return;
+    }
+
+    if (!coordsAreValid) {
+      setSubmissionError('Please acquire GPS coordinates, pick a sector, or enter valid latitude/longitude coordinates.');
       return;
     }
 
@@ -211,18 +207,20 @@ export const ReportFloodPage: React.FC = () => {
       const result = await addReport({
         location: locationName.trim(),
         area,
-        lat,
-        lng,
+        lat: parsedLat,
+        lng: parsedLng,
         waterLevel,
         roadAccessibility,
         floodType,
         description: description.trim() || 'Citizen reported urban street flooding.',
-        reporterName: reporterName.trim() || 'Community Contributor',
+        reporterName: reporterName.trim() || userProfile.name || 'Community Contributor',
         reporterPhone: reporterPhone.trim(),
-        reporterId: 'citizen_active_session',
-        imageFile: selectedFile || undefined,
-        customImage: imageBase64 || undefined,
-        imageMimeType,
+        reporterId: userProfile.uid || userProfile.email || 'citizen_active_session',
+        imageFile: !omitPhoto && selectedFile ? selectedFile : undefined,
+        customImage: !omitPhoto && imageBase64 ? imageBase64 : undefined,
+        imageUrl: !omitPhoto && imagePreview ? imagePreview : undefined,
+        imageMimeType: !omitPhoto ? imageMimeType : undefined,
+        submissionRequestId,
       });
 
       setIsSubmitting(false);
@@ -230,11 +228,15 @@ export const ReportFloodPage: React.FC = () => {
         id: result.report.id,
         hotspotId: result.hotspot.id,
         method: result.report.aiVerificationDetails?.method || 'AI Early Verification',
-        aiConfidence: result.report.aiConfidence || 92.0,
-        aiClassification: result.report.aiClassification || result.report.aiVerificationDetails?.aiAssessment || 'Possible Flooding Detected',
+        aiStatus: result.report.aiStatus || (omitPhoto || !imageBase64 ? 'NOT_RUN' : 'COMPLETED'),
+        aiConfidence: result.report.aiConfidence ?? null,
+        aiClassification:
+          result.report.aiClassification ||
+          result.report.aiVerificationDetails?.aiAssessment ||
+          'No Photograph Attached',
         explanation:
           result.report.aiVerificationDetails?.explanation ||
-          'Automated inspection completed. Incident queued for official officer verification.',
+          'Incident saved and queued for official officer verification.',
         isDuplicate: result.isDuplicate,
         duplicateOfId: result.duplicateOfId,
       });
@@ -246,6 +248,9 @@ export const ReportFloodPage: React.FC = () => {
 
   const handleReset = () => {
     setLocationName('');
+    setArea('');
+    setLatInput('');
+    setLngInput('');
     setDescription('');
     setWaterLevel('Moderate');
     setRoadAccessibility('Partially Blocked');
@@ -259,6 +264,7 @@ export const ReportFloodPage: React.FC = () => {
     setSubmittedResult(null);
     setGpsError(null);
     setGpsSuccess(false);
+    setSubmissionRequestId(createSubmissionRequestId());
   };
 
   return (
@@ -318,11 +324,17 @@ export const ReportFloodPage: React.FC = () => {
 
                 {/* AI verification badge in success */}
                 <div className="mt-3 p-3 bg-white/90 rounded-xl border border-emerald-200/90 text-xs text-slate-700">
-                  <div className="flex items-center gap-2 font-bold text-slate-900 mb-0.5">
+                  <div className="flex items-center gap-2 font-bold text-slate-900 mb-0.5 flex-wrap">
                     <Cpu className="w-4 h-4 text-cyan-700" />
                     <span>{submittedResult.method}: {submittedResult.aiClassification}</span>
                     <span className="text-[10px] bg-cyan-100 text-cyan-800 px-1.5 py-0.5 rounded font-mono">
-                      {submittedResult.aiConfidence}% confidence
+                      {submittedResult.aiStatus === 'NOT_RUN'
+                        ? 'AI NOT RUN'
+                        : submittedResult.aiStatus === 'FAILED'
+                        ? 'AI FAILED'
+                        : submittedResult.aiStatus === 'SIMULATED'
+                        ? `Simulated ${submittedResult.aiConfidence ?? 'N/A'}%`
+                        : `${submittedResult.aiConfidence ?? 'N/A'}% confidence`}
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-500">{submittedResult.explanation}</p>
@@ -333,7 +345,7 @@ export const ReportFloodPage: React.FC = () => {
             <div className="flex flex-col gap-2 shrink-0">
               <button
                 type="button"
-                onClick={() => navigate('/map')}
+                onClick={() => navigate('/officer/map')}
                 className="px-4 py-2 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800 transition-colors flex items-center gap-1.5 shadow-xs"
               >
                 <span>View on Live Map</span>
@@ -352,9 +364,20 @@ export const ReportFloodPage: React.FC = () => {
       )}
 
       {submissionError && (
-        <div className="p-3.5 bg-red-50 text-red-800 border border-red-200 rounded-xl text-xs flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-          <span>{submissionError}</span>
+        <div className="p-3.5 bg-red-50 text-red-800 border border-red-200 rounded-xl text-xs flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>{submissionError}</span>
+          </div>
+          {imagePreview && (
+            <button
+              type="button"
+              onClick={(e) => handleSubmit(e, true)}
+              className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-[11px]"
+            >
+              Submit Without Photo
+            </button>
+          )}
         </div>
       )}
 
@@ -525,13 +548,15 @@ export const ReportFloodPage: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Colombo Municipal Sector
+                  Colombo Municipal Sector <span className="text-red-500">*</span>
                 </label>
                 <select
                   value={area}
-                  onChange={(e) => handleAreaChange(e.target.value as typeof area)}
+                  required
+                  onChange={(e) => handleAreaChange(e.target.value)}
                   className="w-full px-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
                 >
+                  <option value="">Select municipal sector...</option>
                   <option value="Maradana">Maradana Sector</option>
                   <option value="Wellawatte">Wellawatte Sector</option>
                   <option value="Borella">Borella Sector</option>
@@ -546,7 +571,7 @@ export const ReportFloodPage: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-slate-700 flex items-center gap-1">
                     <Compass className="w-3.5 h-3.5 text-cyan-600" />
-                    GPS Coordinates
+                    GPS Coordinates <span className="text-red-500">*</span>
                   </span>
                   <button
                     type="button"
@@ -565,8 +590,9 @@ export const ReportFloodPage: React.FC = () => {
                     <input
                       type="number"
                       step="0.0001"
-                      value={lat}
-                      onChange={(e) => setLat(parseFloat(e.target.value) || 0)}
+                      placeholder="6.92710"
+                      value={latInput}
+                      onChange={(e) => setLatInput(e.target.value)}
                       className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-slate-800"
                     />
                   </div>
@@ -575,8 +601,9 @@ export const ReportFloodPage: React.FC = () => {
                     <input
                       type="number"
                       step="0.0001"
-                      value={lng}
-                      onChange={(e) => setLng(parseFloat(e.target.value) || 0)}
+                      placeholder="79.86530"
+                      value={lngInput}
+                      onChange={(e) => setLngInput(e.target.value)}
                       className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-slate-800"
                     />
                   </div>
@@ -607,15 +634,21 @@ export const ReportFloodPage: React.FC = () => {
                 <p className="text-sm font-bold text-slate-900">
                   {locationName || 'Unspecified location'}
                 </p>
-                <p className="text-xs text-slate-500 mb-3">{area}, Colombo Basin</p>
+                <p className="text-xs text-slate-500 mb-3">
+                  {area ? `${area}, Colombo Basin` : 'Select sector or acquire GPS'}
+                </p>
                 <div className="p-3 bg-white rounded-lg border border-slate-200 text-xs font-mono space-y-1">
                   <div className="flex justify-between">
                     <span className="text-slate-400">Target Lat:</span>
-                    <span className="text-slate-800 font-bold">{lat.toFixed(4)}° N</span>
+                    <span className="text-slate-800 font-bold">
+                      {coordsAreValid ? `${parsedLat.toFixed(4)}° N` : 'Not set'}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-400">Target Lng:</span>
-                    <span className="text-slate-800 font-bold">{lng.toFixed(4)}° E</span>
+                    <span className="text-slate-800 font-bold">
+                      {coordsAreValid ? `${parsedLng.toFixed(4)}° E` : 'Not set'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -781,33 +814,28 @@ export const ReportFloodPage: React.FC = () => {
               </span>
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                 <Cpu className="w-4 h-4 text-cyan-700" />
-                <span>AI Verification Pipeline & Multimodal Processing</span>
+                <span>AI Verification Pipeline &amp; Multimodal Processing</span>
               </h3>
               <p className="text-xs text-slate-500">
-                Uploaded images are analyzed server-side with Gemini 3.8 Flash (or academic simulation heuristic).
+                {imagePreview
+                  ? 'On submission, your EXIF-stripped photograph will be inspected by server-side Gemini 4 Hydrogen (or academic heuristic if no API key is configured).'
+                  : 'No photograph attached — AI vision analysis will be skipped (NOT RUN) and your report will enter human officer review directly.'}
               </p>
             </div>
-            <span className="text-[10px] font-mono bg-cyan-100 text-cyan-800 font-bold px-2 py-0.5 rounded">
-              Confidence Preview: {aiPreview.confidence}%
+            <span className="text-[10px] font-mono bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded">
+              {isProcessingImage ? 'Sanitizing...' : imagePreview ? 'Photo Ready' : 'No Photo'}
             </span>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-2 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-slate-700">AI Assessment Hypothesis:</span>
-              <span className="font-bold text-cyan-800">{aiPreview.aiAssessment}</span>
-            </div>
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-700">Initial Pipeline Status:</span>
               <span className="font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800">
                 Under Review (Human Officer Confirmation Required)
               </span>
             </div>
-            <p className="text-[11px] text-slate-500 pt-2 border-t border-slate-100">
-              {aiPreview.explanation}
-            </p>
             <div className="text-[10px] text-amber-800 bg-amber-50 p-2 rounded font-medium border border-amber-200">
-              Notice: {aiPreview.disclaimer}
+              Notice: AI assessment is an assistive early warning signal only and runs only after submission when a photograph is attached. Official status requires emergency officer confirmation.
             </div>
           </div>
         </div>

@@ -19,7 +19,7 @@ export interface StatusHistoryEntry {
   note?: string;
 }
 
-export type AiStatus = 'COMPLETED' | 'PENDING' | 'FAILED';
+export type AiStatus = 'NOT_RUN' | 'PENDING' | 'COMPLETED' | 'FAILED' | 'SIMULATED';
 
 export interface AiVerificationDetails {
   method: string;
@@ -32,11 +32,12 @@ export interface AiVerificationDetails {
     | 'Uncertain Image'
     | 'Invalid or Unusable Photograph'
     | 'AI Processing Failed'
+    | 'AI Not Run (No Image)'
     | 'Uncertain'
     | 'Simulation Result'
     | string;
   officialStatus?: 'Under Review' | string;
-  confidence: number;
+  confidence: number | null;
   explanation: string;
   uncertainty?: string;
   waterLevelEstimated?: string;
@@ -50,6 +51,7 @@ export interface AiVerificationDetails {
 
 export interface FloodReport {
   id: string;
+  submissionRequestId?: string;
   hotspotId?: string;
   location: string;
   area: 'Maradana' | 'Wellawatte' | 'Borella' | 'Kolonnawa' | 'Dematagoda' | 'Nugegoda' | string;
@@ -73,7 +75,7 @@ export interface FloodReport {
   officerNotes?: string[];
   verificationTimestamp?: string;
   verifiedBy?: string;
-  aiConfidence?: number;
+  aiConfidence?: number | null;
   aiClassification?: string;
   aiStatus?: AiStatus;
   aiVerificationDetails?: AiVerificationDetails;
@@ -89,12 +91,15 @@ export interface FloodHotspot {
   lat: number;
   lng: number;
   reportCount: number; // Unique non-duplicate reports
+  totalRecordCount?: number; // Unique + duplicate records
   duplicateReportCount?: number;
+  independentConfirmations?: number;
   firstReportedTime: string;
   latestReportedTime: string;
   riskLevel: 'HIGH' | 'MEDIUM' | 'LOW';
   riskScore: number; // 0 - 100
   forecastRainfallMm: number; // next 3 hours
+  rainfallSource?: 'FORECAST' | 'AREA_OVERRIDE' | 'MISSING';
   verificationStatus: 'VERIFIED' | 'UNDER REVIEW';
   precaution: string;
   associatedReportIds: string[];
@@ -120,6 +125,9 @@ export interface BlockchainRecord {
   network: string;
   status: 'CONFIRMED (SIMULATED)' | 'PENDING (SIMULATED)' | 'CONFIRMED (TESTNET)' | 'PENDING (TESTNET)';
   merkleRoot: string;
+  prevHash: string;
+  recordHash: string;
+  canonicalPayload: string;
   validatorCount: number;
   isSimulated: boolean;
   payloadHash: string;
@@ -152,6 +160,188 @@ export const DEFAULT_CLUSTERING_CONFIG: ClusteringConfig = {
   temporalWindowHours: 2,
 };
 
+export const GENESIS_PREV_HASH = '0x' + '0'.repeat(64);
+
+/**
+ * Pure TypeScript FIPS 180-4 SHA-256 implementation so canonical hashing
+ * executes identically and synchronously in both Node.js and browser bundles.
+ */
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+const SHA256_H0 = new Uint32Array([
+  0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+]);
+
+export function sha256Hex(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  const bitLen = bytes.length * 8;
+  const paddedLen = Math.ceil((bytes.length + 9) / 64) * 64;
+  const padded = new Uint8Array(paddedLen);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+
+  const view = new DataView(padded.buffer);
+  const highBits = Math.floor(bitLen / 0x100000000);
+  const lowBits = bitLen >>> 0;
+  view.setUint32(paddedLen - 8, highBits, false);
+  view.setUint32(paddedLen - 4, lowBits, false);
+
+  const h = new Uint32Array(SHA256_H0);
+  const w = new Uint32Array(64);
+  const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
+
+  for (let offset = 0; offset < paddedLen; offset += 64) {
+    for (let i = 0; i < 16; i++) {
+      w[i] = view.getUint32(offset + i * 4, false);
+    }
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+
+    let [a, b, c, d, e, f, g, hh] = h;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (hh + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) >>> 0;
+
+      hh = g;
+      g = f;
+      f = e;
+      e = (d + temp1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) >>> 0;
+    }
+
+    h[0] = (h[0] + a) >>> 0;
+    h[1] = (h[1] + b) >>> 0;
+    h[2] = (h[2] + c) >>> 0;
+    h[3] = (h[3] + d) >>> 0;
+    h[4] = (h[4] + e) >>> 0;
+    h[5] = (h[5] + f) >>> 0;
+    h[6] = (h[6] + g) >>> 0;
+    h[7] = (h[7] + hh) >>> 0;
+  }
+
+  return Array.from(h)
+    .map((val) => val.toString(16).padStart(8, '0'))
+    .join('');
+}
+
+export function canonicalizeAuditPayload(payload: {
+  eventId: string;
+  hotspotId: string;
+  location: string;
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  timestamp: string;
+}): string {
+  return JSON.stringify({
+    eventId: payload.eventId,
+    hotspotId: payload.hotspotId,
+    location: payload.location,
+    severity: payload.severity,
+    timestamp: payload.timestamp,
+  });
+}
+
+export function computeBlockchainHashChain(params: {
+  eventId: string;
+  hotspotId: string;
+  location: string;
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  timestamp: string;
+  blockNumber: number;
+  prevHash?: string;
+}): {
+  canonicalPayload: string;
+  payloadHash: string;
+  prevHash: string;
+  recordHash: string;
+  merkleRoot: string;
+  txHash: string;
+} {
+  const prevHash = params.prevHash || GENESIS_PREV_HASH;
+  const canonicalPayload = canonicalizeAuditPayload(params);
+  const payloadHash = `0x${sha256Hex(canonicalPayload)}`;
+  const recordHash = `0x${sha256Hex(`${prevHash}|${payloadHash}|${params.blockNumber}`)}`;
+  const merkleRoot = `0x${sha256Hex(`MERKLE|${payloadHash}|${recordHash}`)}`;
+  const txHash = `0x${sha256Hex(`TX|${recordHash}|${params.eventId}`)}`;
+
+  return {
+    canonicalPayload,
+    payloadHash,
+    prevHash,
+    recordHash,
+    merkleRoot,
+    txHash,
+  };
+}
+
+export function verifyBlockchainRecordIntegrity(
+  record: BlockchainRecord,
+  expectedPrevHash?: string
+): {
+  valid: boolean;
+  payloadValid: boolean;
+  chainValid: boolean;
+  prevHashMatches: boolean;
+  recomputedPayloadHash: string;
+  recomputedRecordHash: string;
+  reason: string;
+} {
+  const expectedCanonical = canonicalizeAuditPayload({
+    eventId: record.eventId,
+    hotspotId: record.hotspotId,
+    location: record.location,
+    severity: record.severity,
+    timestamp: record.timestamp,
+  });
+  const canonical = record.canonicalPayload || expectedCanonical;
+  const recomputedPayloadHash = `0x${sha256Hex(canonical)}`;
+  const prevHash = record.prevHash || GENESIS_PREV_HASH;
+  const recomputedRecordHash = `0x${sha256Hex(`${prevHash}|${recomputedPayloadHash}|${record.blockNumber}`)}`;
+
+  const payloadValid =
+    canonical === expectedCanonical && record.payloadHash?.toLowerCase() === recomputedPayloadHash.toLowerCase();
+  const chainValid = record.recordHash?.toLowerCase() === recomputedRecordHash.toLowerCase();
+  const prevHashMatches = expectedPrevHash ? prevHash.toLowerCase() === expectedPrevHash.toLowerCase() : true;
+
+  const valid = payloadValid && chainValid && prevHashMatches;
+  let reason = 'SHA-256 payload digest and previous-block hash link verified.';
+  if (!payloadValid) {
+    reason = 'Payload digest mismatch: record metadata does not match stored SHA-256 payloadHash.';
+  } else if (!prevHashMatches) {
+    reason = 'Broken hash chain: prevHash does not match preceding audit block recordHash.';
+  } else if (!chainValid) {
+    reason = 'Block seal mismatch: recomputed SHA-256 recordHash does not match stored recordHash.';
+  }
+
+  return {
+    valid,
+    payloadValid,
+    chainValid,
+    prevHashMatches,
+    recomputedPayloadHash,
+    recomputedRecordHash,
+    reason,
+  };
+}
+
 /**
  * Generates a collision-resistant report ID using crypto.randomUUID when available
  */
@@ -167,7 +357,7 @@ export function generateReportId(): string {
  */
 export function validateCoordinates(lat: number, lng: number): boolean {
   if (typeof lat !== 'number' || typeof lng !== 'number') return false;
-  if (isNaN(lat) || isNaN(lng)) return false;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
   if (lat < -90 || lat > 90) return false;
   if (lng < -180 || lng > 180) return false;
   return true;
@@ -256,7 +446,7 @@ export function evaluateRiskLevel(
     return {
       riskLevel: 'HIGH',
       score,
-      reasoning: `Deterministic Rule (HIGH Risk): ${count} unique citizen reports (threshold >= ${config.highReportCount}) AND ${rain.toFixed(1)} mm 3h forecast rainfall (threshold > ${config.highRainfallMm} mm). Note: Heuristic indicator, not hydraulic flood prediction.`,
+      reasoning: `Deterministic Rule (HIGH Risk): ${count} unique citizen reports (threshold >= ${config.highReportCount}) AND ${rain.toFixed(1)} mm 3h forecast rainfall (threshold > ${config.highRainfallMm} mm). Note: Rule-based early warning indicator, not hydraulic flood modeling.`,
       precaution: 'Deploy immediate municipal drainage suckers, divert transit from low-lying arterial underpasses, and alert regional operations center.',
       breakdown: {
         reportCount: count,
@@ -307,7 +497,7 @@ export function evaluateRiskLevel(
 
 /**
  * Checks if two reports are potential duplicates
- * (e.g. reported within 25 meters and 5 minutes of each other)
+ * (reported within 25 meters and 5 minutes of each other)
  */
 export function areReportsDuplicate(
   reportA: { lat: number; lng: number; timestamp: string },
@@ -316,14 +506,19 @@ export function areReportsDuplicate(
   const distance = calculateHaversineDistance(reportA.lat, reportA.lng, reportB.lat, reportB.lng);
   if (distance > 25) return false;
 
-  const timeDiffMs = Math.abs(new Date(reportA.timestamp).getTime() - new Date(reportB.timestamp).getTime());
+  const tA = Date.parse(reportA.timestamp);
+  const tB = Date.parse(reportB.timestamp);
+  if (isNaN(tA) || isNaN(tB)) return false;
+
+  const timeDiffMs = Math.abs(tA - tB);
   const fiveMinutesMs = 5 * 60 * 1000;
   return timeDiffMs <= fiveMinutesMs;
 }
 
 /**
- * Clusters reports into hotspots based on spatial radius (<= 500m) and temporal window (<= 2 hours)
- * Purely geographic and temporal: never clusters solely based on matching area name strings!
+ * Connected-component geospatial + temporal clustering (BFS):
+ * Groups reports connected within spatialRadiusMeters (<= 500m default) and
+ * temporalWindowHours (<= 2h default), purely using coordinates & timestamps.
  */
 export function clusterReports(
   reports: FloodReport[],
@@ -331,69 +526,107 @@ export function clusterReports(
   rainfallByArea?: Record<string, number>,
   riskThresholds?: Partial<RiskThresholdConfig>
 ): FloodHotspot[] {
-  const validReports = reports.filter((r) => validateCoordinates(r.lat, r.lng));
+  const validReports = reports.filter(
+    (r) =>
+      validateCoordinates(r.lat, r.lng) &&
+      typeof r.timestamp === 'string' &&
+      !isNaN(Date.parse(r.timestamp))
+  );
   if (validReports.length === 0) return [];
 
-  // Sort descending by timestamp (newest first)
-  const sortedReports = [...validReports].sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-  );
+  // Sort deterministically: newest first, tie-broken by report ID
+  const sortedReports = [...validReports].sort((a, b) => {
+    const diff = Date.parse(b.timestamp) - Date.parse(a.timestamp);
+    return diff !== 0 ? diff : a.id.localeCompare(b.id);
+  });
 
+  const windowMs = config.temporalWindowHours * 60 * 60 * 1000;
+  const visited = new Set<string>();
   const clusters: FloodReport[][] = [];
-  const assignedReportIds = new Set<string>();
 
-  for (const report of sortedReports) {
-    if (assignedReportIds.has(report.id)) continue;
+  for (const root of sortedReports) {
+    if (visited.has(root.id)) continue;
 
-    const cluster: FloodReport[] = [report];
-    assignedReportIds.add(report.id);
+    const component: FloodReport[] = [];
+    const queue: FloodReport[] = [root];
+    visited.add(root.id);
 
-    const reportTime = new Date(report.timestamp).getTime();
-    const windowMs = config.temporalWindowHours * 60 * 60 * 1000;
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      component.push(current);
+      const currentTime = Date.parse(current.timestamp);
 
-    for (const candidate of sortedReports) {
-      if (assignedReportIds.has(candidate.id)) continue;
+      for (const candidate of sortedReports) {
+        if (visited.has(candidate.id)) continue;
 
-      const candidateTime = new Date(candidate.timestamp).getTime();
-      const timeDiff = Math.abs(reportTime - candidateTime);
+        const candidateTime = Date.parse(candidate.timestamp);
+        if (Math.abs(currentTime - candidateTime) > windowMs) continue;
 
-      // Check temporal window
-      if (timeDiff > windowMs) continue;
-
-      // Check spatial radius to cluster seed via Haversine distance
-      const distance = calculateHaversineDistance(report.lat, report.lng, candidate.lat, candidate.lng);
-      if (distance <= config.spatialRadiusMeters) {
-        cluster.push(candidate);
-        assignedReportIds.add(candidate.id);
+        const distance = calculateHaversineDistance(
+          current.lat,
+          current.lng,
+          candidate.lat,
+          candidate.lng
+        );
+        if (distance <= config.spatialRadiusMeters) {
+          visited.add(candidate.id);
+          queue.push(candidate);
+        }
       }
     }
 
-    clusters.push(cluster);
+    clusters.push(component);
   }
 
-  // Convert clusters into FloodHotspot objects
-  return clusters.map((cluster, idx) => {
-    const seed = cluster[0];
+  const claimedIds = new Set<string>();
+
+  return clusters.map((cluster) => {
+    const uniqueReports = cluster.filter((r) => !r.isDuplicate);
+    const duplicateCount = cluster.length - uniqueReports.length;
+    const uniqueCount = uniqueReports.length > 0 ? uniqueReports.length : 0;
+    const seed = uniqueReports[0] || cluster[0];
+
     const avgLat = cluster.reduce((sum, r) => sum + r.lat, 0) / cluster.length;
     const avgLng = cluster.reduce((sum, r) => sum + r.lng, 0) / cluster.length;
 
-    const timestamps = cluster.map((r) => new Date(r.timestamp).getTime());
+    const timestamps = cluster.map((r) => Date.parse(r.timestamp));
     const minTime = new Date(Math.min(...timestamps)).toISOString();
     const maxTime = new Date(Math.max(...timestamps)).toISOString();
     const timeSpanMinutes = Math.round((Math.max(...timestamps) - Math.min(...timestamps)) / (60 * 1000));
 
     const area = seed.area || 'Colombo Basin';
-    const forecastRainfallMm = rainfallByArea?.[area] ?? (seed.riskLevel === 'HIGH' ? 35.0 : seed.riskLevel === 'MEDIUM' ? 18.0 : 8.0);
-
-    // Distinguish unique reports from duplicates in count
-    const uniqueReports = cluster.filter((r) => !r.isDuplicate);
-    const duplicateCount = cluster.filter((r) => r.isDuplicate).length;
-    const uniqueCount = uniqueReports.length > 0 ? uniqueReports.length : 1;
+    let forecastRainfallMm = 0;
+    let rainfallSource: FloodHotspot['rainfallSource'] = 'MISSING';
+    if (rainfallByArea) {
+      if (typeof rainfallByArea[area] === 'number' && Number.isFinite(rainfallByArea[area])) {
+        forecastRainfallMm = rainfallByArea[area];
+        rainfallSource = 'AREA_OVERRIDE';
+      } else if (typeof rainfallByArea['__default'] === 'number' && Number.isFinite(rainfallByArea['__default'])) {
+        forecastRainfallMm = rainfallByArea['__default'];
+        rainfallSource = 'FORECAST';
+      }
+    }
 
     const riskEval = evaluateRiskLevel(uniqueCount, forecastRainfallMm, riskThresholds);
+    const hasVerified = cluster.some(
+      (r) =>
+        r.verificationStatus === 'VERIFIED' ||
+        r.incidentStatus === 'Verified' ||
+        r.incidentStatus === 'Alert Issued'
+    );
 
-    const hasVerified = cluster.some((r) => r.verificationStatus === 'VERIFIED' || r.incidentStatus === 'Verified' || r.incidentStatus === 'Alert Issued');
-    const hotspotId = seed.hotspotId || `HS-0${40 + idx}`;
+    // Deterministic stable hotspot ID derived from existing unclaimed hotspotId or sorted report IDs
+    const candidateExistingId = cluster
+      .map((r) => r.hotspotId)
+      .find((hid): hid is string => Boolean(hid && hid.trim() && !claimedIds.has(hid)));
+    const sortedReportKey = [...cluster].map((r) => r.id).sort().join('|');
+    const hotspotId = candidateExistingId || `HS-${sha256Hex(sortedReportKey).slice(0, 6).toUpperCase()}`;
+    claimedIds.add(hotspotId);
+
+    const rainfallNote =
+      rainfallSource === 'MISSING'
+        ? ' Rainfall telemetry unavailable (0.0 mm assumed without synthetic fallback).'
+        : ` Forecast rainfall: ${forecastRainfallMm.toFixed(1)} mm (${rainfallSource}).`;
 
     return {
       id: hotspotId,
@@ -402,12 +635,15 @@ export function clusterReports(
       lat: Number(avgLat.toFixed(5)),
       lng: Number(avgLng.toFixed(5)),
       reportCount: uniqueCount,
+      totalRecordCount: cluster.length,
       duplicateReportCount: duplicateCount,
+      independentConfirmations: uniqueCount,
       firstReportedTime: minTime,
       latestReportedTime: maxTime,
       riskLevel: riskEval.riskLevel,
       riskScore: riskEval.score,
       forecastRainfallMm,
+      rainfallSource,
       verificationStatus: hasVerified ? 'VERIFIED' : 'UNDER REVIEW',
       precaution: riskEval.precaution,
       associatedReportIds: cluster.map((r) => r.id),
@@ -418,7 +654,7 @@ export function clusterReports(
         spatialRadiusMeters: config.spatialRadiusMeters,
         centerLat: Number(avgLat.toFixed(5)),
         centerLng: Number(avgLng.toFixed(5)),
-        reasoning: `${uniqueCount} unique report(s) (and ${duplicateCount} duplicate records) grouped within ${config.spatialRadiusMeters}m radius over ${timeSpanMinutes}m duration (window: ${config.temporalWindowHours}h).`,
+        reasoning: `${uniqueCount} unique report(s) (and ${duplicateCount} duplicate records) connected within ${config.spatialRadiusMeters}m radius over ${timeSpanMinutes}m duration (window: ${config.temporalWindowHours}h).${rainfallNote}`,
       },
     };
   });
@@ -426,7 +662,7 @@ export function clusterReports(
 
 /**
  * AI Verification simulation for citizen uploaded flood reports (Demonstration Mode)
- * Strictly marks AI assessment as 'Simulation Result' and leaves incident status as 'Under Review'
+ * Never auto-verifies incidents and marks NOT_RUN when no image is attached.
  */
 export function simulateAiVerification(params: {
   waterLevel: string;
@@ -440,15 +676,15 @@ export function simulateAiVerification(params: {
 
   if (!hasImage) {
     return {
-      method: 'Demonstration Heuristic (No Image)',
-      modelName: 'None (Simulation)',
-      aiStatus: 'COMPLETED',
+      method: 'No Visual Analysis Run (Text-Only Report)',
+      modelName: 'None',
+      aiStatus: 'NOT_RUN',
       hasVisibleFlooding: false,
-      aiAssessment: 'Uncertain Image',
+      aiAssessment: 'AI Not Run (No Image)',
       officialStatus: 'Under Review',
-      confidence: 0,
-      explanation: 'No photograph provided with report. Report queued for field inspection.',
-      uncertainty: 'High uncertainty: text-only submission.',
+      confidence: null,
+      explanation: 'No photograph was attached to this submission. AI visual verification was not run; queued for officer field triage.',
+      uncertainty: 'Visual confirmation unavailable: text-only submission.',
       waterLevelEstimated: waterLevel,
       roadAccessibilityEstimated: 'Uncertain',
       humanVerificationRequired: true,
@@ -463,13 +699,13 @@ export function simulateAiVerification(params: {
   return {
     method: 'Demonstration Heuristic (Simulation)',
     modelName: 'None (Academic Simulation)',
-    aiStatus: 'COMPLETED',
+    aiStatus: 'SIMULATED',
     hasVisibleFlooding: true,
     aiAssessment: 'Possible Flooding Detected',
     officialStatus: 'Under Review',
     confidence,
-    explanation: `Simulated texture analysis (Academic Prototype): Road surface optical reflectivity consistent with ${waterLevel.toLowerCase()} water accumulation.`,
-    uncertainty: 'Estimated synthetic margin of error: ±4.5%. Ground truth requires emergency team confirmation.',
+    explanation: `Simulated heuristic result (Academic Prototype): Reported water level (${waterLevel.toLowerCase()}) evaluated without live Vision API key.`,
+    uncertainty: 'Demonstration mode heuristic. Ground truth requires emergency officer confirmation.',
     waterLevelEstimated: waterLevel,
     roadAccessibilityEstimated: isSevere ? 'Completely Blocked' : 'Partially Blocked',
     humanVerificationRequired: true,
@@ -479,44 +715,60 @@ export function simulateAiVerification(params: {
 }
 
 /**
- * Generates simulated blockchain transaction record with SHA-256 payload hash
+ * Generates prototype hash-chain audit record using real deterministic SHA-256 hashes.
  */
 export function generateSimulatedBlockchainRecord(
   hotspotId: string,
   location: string,
-  severity: 'HIGH' | 'MEDIUM' | 'LOW'
+  severity: 'HIGH' | 'MEDIUM' | 'LOW',
+  options?: {
+    prevHash?: string;
+    blockNumber?: number;
+    eventId?: string;
+    timestamp?: string;
+  }
 ): BlockchainRecord {
-  const randomHex = (len: number) =>
-    Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+  const timestamp = options?.timestamp || new Date().toISOString();
+  const suffix = sha256Hex(`${hotspotId}|${timestamp}`).slice(0, 6).toUpperCase();
+  const eventId = options?.eventId || `EVT-${suffix}`;
+  const blockNumber = options?.blockNumber ?? 1;
+  const prevHash = options?.prevHash || GENESIS_PREV_HASH;
 
-  const timestamp = new Date().toISOString();
-  const txHash = `0x${randomHex(64)}`;
-  const merkleRoot = `0x${randomHex(64)}`;
-  const payloadHash = `0x${randomHex(64)}`;
-  const blockNumber = 19482000 + Math.floor(Math.random() * 5000);
-
-  return {
-    eventId: `EVT-${Date.now().toString().slice(-6)}`,
+  const hashes = computeBlockchainHashChain({
+    eventId,
     hotspotId,
     location,
     severity,
     timestamp,
-    txHash,
     blockNumber,
-    network: 'Ethereum Sepolia Testnet (Simulated)',
+    prevHash,
+  });
+
+  return {
+    eventId,
+    hotspotId,
+    location,
+    severity,
+    timestamp,
+    txHash: hashes.txHash,
+    blockNumber,
+    network: 'Prototype SHA-256 Hash-Chain (Simulated Ledger)',
     status: 'CONFIRMED (SIMULATED)',
-    merkleRoot,
-    payloadHash,
-    validatorCount: 14 + Math.floor(Math.random() * 8),
+    merkleRoot: hashes.merkleRoot,
+    prevHash: hashes.prevHash,
+    recordHash: hashes.recordHash,
+    canonicalPayload: hashes.canonicalPayload,
+    payloadHash: hashes.payloadHash,
+    validatorCount: 1,
     isSimulated: true,
-    contractAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e (Simulated)',
+    contractAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e (Prototype Audit Spec)',
     chainId: 11155111,
-    auditExplanation: 'Demonstration Smart Contract: Sealed tamper-evident audit record. Confirms that report metadata was anchored at block time without retroactive modification.',
+    auditExplanation: `Prototype SHA-256 Hash-Chain Record: Canonical JSON payload hashed and linked to previous record (${prevHash.slice(0, 14)}...) for tamper-evident audit verification.`,
   };
 }
 
 /**
- * Calculates dynamic analytics metrics from active dataset
+ * Calculates dynamic analytics metrics strictly from active dataset (zero hardcoded metrics or synthetic multipliers)
  */
 export function calculateDynamicAnalytics(
   reports: FloodReport[],
@@ -535,7 +787,8 @@ export function calculateDynamicAnalytics(
 
   const filteredReports = reports.filter((r) => {
     if (rangeMs === Infinity) return true;
-    return now - new Date(r.timestamp).getTime() <= rangeMs;
+    const ts = Date.parse(r.timestamp);
+    return !isNaN(ts) && now - ts <= rangeMs;
   });
 
   const totalReports = filteredReports.length;
@@ -567,13 +820,14 @@ export function calculateDynamicAnalytics(
   });
 
   // Reports by zone
-  const zoneMap: Record<string, { zone: string; reports: number; highRisk: number; mediumRisk: number; lowRisk: number }> = {};
+  const zoneMap: Record<string, { zone: string; reports: number; uniqueReports: number; highRisk: number; mediumRisk: number; lowRisk: number }> = {};
   filteredReports.forEach((r) => {
     const z = r.area || 'Other';
     if (!zoneMap[z]) {
-      zoneMap[z] = { zone: z, reports: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0 };
+      zoneMap[z] = { zone: z, reports: 0, uniqueReports: 0, highRisk: 0, mediumRisk: 0, lowRisk: 0 };
     }
     zoneMap[z].reports += 1;
+    if (!r.isDuplicate) zoneMap[z].uniqueReports += 1;
     if (r.riskLevel === 'HIGH') zoneMap[z].highRisk += 1;
     else if (r.riskLevel === 'MEDIUM') zoneMap[z].mediumRisk += 1;
     else zoneMap[z].lowRisk += 1;
@@ -581,22 +835,124 @@ export function calculateDynamicAnalytics(
 
   const reportsByZone = Object.values(zoneMap).sort((a, b) => b.reports - a.reports);
 
-  // Time to alert estimation
-  const verifiedList = filteredReports.filter(
-    (r) => r.verificationTimestamp && r.timestamp
-  );
-  let avgProcessingMinutes = 4.2;
-  if (verifiedList.length > 0) {
-    const totalMinutes = verifiedList.reduce((acc, r) => {
-      const diff = Math.max(0.5, (new Date(r.verificationTimestamp!).getTime() - new Date(r.timestamp).getTime()) / (60 * 1000));
-      return acc + diff;
-    }, 0);
-    avgProcessingMinutes = Number((totalMinutes / verifiedList.length).toFixed(1));
-  }
+  // Average Review Time (strictly computed from verified timestamps; null if insufficient timestamps)
+  const verifiedDurations = filteredReports
+    .map((r) => {
+      if (!r.verificationTimestamp || !r.timestamp) return null;
+      const start = Date.parse(r.timestamp);
+      const end = Date.parse(r.verificationTimestamp);
+      if (isNaN(start) || isNaN(end) || end < start) return null;
+      return (end - start) / (60 * 1000);
+    })
+    .filter((v): v is number => v !== null);
 
-  // Verified vs unverified ratio
-  const verifiedCount = filteredReports.filter((r) => r.verificationStatus === 'VERIFIED' || r.incidentStatus === 'Verified' || r.incidentStatus === 'Alert Issued').length;
+  const avgReviewMinutes: number | null =
+    verifiedDurations.length > 0
+      ? Number((verifiedDurations.reduce((a, b) => a + b, 0) / verifiedDurations.length).toFixed(1))
+      : null;
+
+  // Average Time to Alert Issued (computed from statusHistory transitions)
+  const alertDurations = filteredReports
+    .map((r) => {
+      const alertEntry = r.statusHistory?.find((s) => s.status === 'Alert Issued');
+      if (!alertEntry || !r.timestamp) return null;
+      const start = Date.parse(r.timestamp);
+      const end = Date.parse(alertEntry.timestamp);
+      if (isNaN(start) || isNaN(end) || end < start) return null;
+      return (end - start) / (60 * 1000);
+    })
+    .filter((v): v is number => v !== null);
+
+  const avgAlertMinutes: number | null =
+    alertDurations.length > 0
+      ? Number((alertDurations.reduce((a, b) => a + b, 0) / alertDurations.length).toFixed(1))
+      : null;
+
+  // Verified vs Unverified
+  const verifiedCount = filteredReports.filter(
+    (r) => r.verificationStatus === 'VERIFIED' || r.incidentStatus === 'Verified' || r.incidentStatus === 'Alert Issued' || r.incidentStatus === 'Resolved'
+  ).length;
+  const unverifiedCount = Math.max(0, totalReports - verifiedCount);
   const verifiedPercentage = totalReports > 0 ? Math.round((verifiedCount / totalReports) * 100) : 0;
+
+  // Unique vs Duplicate
+  const duplicateReportCount = filteredReports.filter((r) => Boolean(r.isDuplicate)).length;
+  const uniqueReportCount = Math.max(0, totalReports - duplicateReportCount);
+
+  // Hotspot severity distribution
+  const hotspotSeverityDistribution = [
+    { name: 'HIGH', count: hotspots.filter((h) => h.riskLevel === 'HIGH').length, color: '#EF4444' },
+    { name: 'MEDIUM', count: hotspots.filter((h) => h.riskLevel === 'MEDIUM').length, color: '#F59E0B' },
+    { name: 'LOW', count: hotspots.filter((h) => h.riskLevel === 'LOW').length, color: '#22C55E' },
+  ];
+
+  // Report volume over time (real timestamp buckets, zero synthetic multipliers)
+  const validTimestampReports = filteredReports
+    .filter((r) => !isNaN(Date.parse(r.timestamp)))
+    .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+
+  const bucketMap = new Map<
+    string,
+    { label: string; timestamp: string; total: number; highRisk: number; mediumRisk: number; lowRisk: number; verified: number }
+  >();
+
+  validTimestampReports.forEach((r) => {
+    const dt = new Date(r.timestamp);
+    const key =
+      timeRange === '24h'
+        ? `${dt.toISOString().slice(0, 13)}:00`
+        : dt.toISOString().slice(0, 10);
+    const label =
+      timeRange === '24h'
+        ? `${dt.getUTCHours().toString().padStart(2, '0')}:00`
+        : dt.toISOString().slice(5, 10);
+
+    if (!bucketMap.has(key)) {
+      bucketMap.set(key, {
+        label,
+        timestamp: key,
+        total: 0,
+        highRisk: 0,
+        mediumRisk: 0,
+        lowRisk: 0,
+        verified: 0,
+      });
+    }
+    const entry = bucketMap.get(key)!;
+    entry.total += 1;
+    if (r.riskLevel === 'HIGH') entry.highRisk += 1;
+    else if (r.riskLevel === 'MEDIUM') entry.mediumRisk += 1;
+    else entry.lowRisk += 1;
+    if (r.verificationStatus === 'VERIFIED' || r.incidentStatus === 'Verified' || r.incidentStatus === 'Alert Issued') {
+      entry.verified += 1;
+    }
+  });
+
+  const reportVolumeOverTime = Array.from(bucketMap.values());
+
+  // Rainfall vs Volume comparison from real hotspots
+  const rainfallBuckets = [
+    { bucket: '0-10 mm', min: 0, max: 10 },
+    { bucket: '10.1-20 mm', min: 10.0001, max: 20 },
+    { bucket: '> 20 mm', min: 20.0001, max: Infinity },
+  ].map((b) => {
+    const matched = hotspots.filter(
+      (h) => h.rainfallSource !== 'MISSING' && h.forecastRainfallMm >= b.min && h.forecastRainfallMm <= b.max
+    );
+    const repSum = matched.reduce((acc, h) => acc + h.reportCount, 0);
+    const rainAvg =
+      matched.length > 0
+        ? Number((matched.reduce((acc, h) => acc + h.forecastRainfallMm, 0) / matched.length).toFixed(1))
+        : 0;
+    return {
+      bucket: b.bucket,
+      hotspotCount: matched.length,
+      reportCount: repSum,
+      avgRainfallMm: rainAvg,
+    };
+  });
+
+  const hotspotsWithForecastRainfall = hotspots.filter((h) => h.rainfallSource !== 'MISSING').length;
 
   return {
     totalReports,
@@ -606,8 +962,33 @@ export function calculateDynamicAnalytics(
     riskDistribution,
     statusCounts,
     reportsByZone,
-    avgProcessingMinutes,
+    avgProcessingMinutes: avgReviewMinutes,
+    avgReviewMinutes,
+    avgAlertMinutes,
     verifiedCount,
+    unverifiedCount,
     verifiedPercentage,
+    uniqueReportCount,
+    duplicateReportCount,
+    verifiedVsUnverified: [
+      { name: 'Verified', count: verifiedCount, color: '#22C55E' },
+      { name: 'Unverified / Review', count: unverifiedCount, color: '#F59E0B' },
+    ],
+    uniqueVsDuplicate: [
+      { name: 'Unique', count: uniqueReportCount, color: '#0284C7' },
+      { name: 'Duplicate', count: duplicateReportCount, color: '#64748B' },
+    ],
+    hotspotSeverityDistribution,
+    reportVolumeOverTime,
+    rainfallVsVolumeCorrelation: rainfallBuckets,
+    hasRainfallCorrelationData: hotspotsWithForecastRainfall > 0,
+    dataCompleteness: {
+      reportsWithCoordinates: filteredReports.filter((r) => validateCoordinates(r.lat, r.lng)).length,
+      reportsWithImages: filteredReports.filter((r) => Boolean(r.imageUrl)).length,
+      reportsWithValidTimestamps: validTimestampReports.length,
+      hotspotsWithForecastRainfall,
+      missingRainfallHotspots: hotspots.length - hotspotsWithForecastRainfall,
+    },
+    freshnessTimestamp: new Date().toISOString(),
   };
 }

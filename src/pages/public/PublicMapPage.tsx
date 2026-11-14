@@ -111,7 +111,11 @@ export const PublicMapPage: React.FC = () => {
         </div>
         <div className="flex items-center gap-2 font-mono text-[11px] text-amber-800 bg-amber-100/70 px-2.5 py-1 rounded-lg shrink-0">
           <Clock className="w-3.5 h-3.5" />
-          <span>Updated Live (Open-Meteo Radar)</span>
+          <span>
+            {weather.isLive
+              ? `Open-Meteo Forecast API (${weather.updatedAt})`
+              : 'Simulated Monsoon Scenario (Demo Mode)'}
+          </span>
         </div>
       </div>
 
@@ -197,8 +201,12 @@ export const PublicMapPage: React.FC = () => {
               <p className="text-xs text-slate-500 mt-0.5">{hotspot.area} Municipal Basin</p>
 
               <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs font-mono text-slate-600">
-                <span>{hotspot.reportCount} reports verified</span>
-                <span className="text-cyan-700 font-bold">{hotspot.forecastRainfallMm} mm rain</span>
+                <span>
+                  {hotspot.reportCount} unique ({hotspot.verificationStatus === 'VERIFIED' ? 'Verified' : 'Under Review'})
+                </span>
+                <span className="text-cyan-700 font-bold">
+                  {hotspot.rainfallSource === 'MISSING' ? 'Rain: N/A' : `${hotspot.forecastRainfallMm} mm rain`}
+                </span>
               </div>
 
               <p className="text-[11px] text-slate-600 mt-2 bg-slate-50 p-2 rounded-xl line-clamp-2">

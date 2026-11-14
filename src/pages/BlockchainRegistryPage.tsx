@@ -3,9 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useFlood } from '../context/FloodContext';
-import { BlockchainRecord } from '../utils/floodLogic';
+import {
+  BlockchainRecord,
+  GENESIS_PREV_HASH,
+  verifyBlockchainRecordIntegrity,
+} from '../utils/floodLogic';
 import { RiskBadge } from '../components/common/RiskBadge';
 import {
   Link2,
@@ -32,7 +36,22 @@ export const BlockchainRegistryPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [selectedTx, setSelectedTx] = useState<BlockchainRecord | null>(blockchainRecords[0] || null);
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
-  const [verifiedHashNotice, setVerifiedHashNotice] = useState<string | null>(null);
+  const [verificationResult, setVerificationResult] = useState<{
+    valid: boolean;
+    message: string;
+  } | null>(null);
+
+  // Order ascending by blockNumber to find expected prevHash predecessor
+  const chronologicalRecords = useMemo(
+    () => [...blockchainRecords].sort((a, b) => a.blockNumber - b.blockNumber),
+    [blockchainRecords]
+  );
+
+  const getExpectedPrevHash = (rec: BlockchainRecord): string => {
+    const idx = chronologicalRecords.findIndex((r) => r.eventId === rec.eventId);
+    if (idx <= 0) return GENESIS_PREV_HASH;
+    return chronologicalRecords[idx - 1].recordHash || chronologicalRecords[idx - 1].txHash;
+  };
 
   // Filtered records
   const filteredRecords = blockchainRecords.filter((rec) => {
@@ -56,38 +75,82 @@ export const BlockchainRegistryPage: React.FC = () => {
   };
 
   const handleVerifyHashProof = (rec: BlockchainRecord) => {
-    setVerifiedHashNotice(`SHA-256 Merkle root validated against block #${rec.blockNumber}. Record integrity verified.`);
-    setTimeout(() => setVerifiedHashNotice(null), 4000);
+    const expectedPrev = getExpectedPrevHash(rec);
+    const check = verifyBlockchainRecordIntegrity(rec, expectedPrev);
+    if (check.valid) {
+      setVerificationResult({
+        valid: true,
+        message: `Cryptographic Check PASSED for Block #${rec.blockNumber} (${rec.eventId}): recomputed SHA-256 recordHash & prevHash chain link match (${check.recomputedRecordHash.slice(0, 14)}...).`,
+      });
+    } else {
+      setVerificationResult({
+        valid: false,
+        message: `Tamper Alert on Block #${rec.blockNumber} (${rec.eventId}): ${check.reason}`,
+      });
+    }
+  };
+
+  const handleVerifyFullChain = () => {
+    if (chronologicalRecords.length === 0) {
+      setVerificationResult({ valid: false, message: 'No audit records in ledger to verify.' });
+      return;
+    }
+    let prev = GENESIS_PREV_HASH;
+    for (const rec of chronologicalRecords) {
+      const check = verifyBlockchainRecordIntegrity(rec, prev);
+      if (!check.valid) {
+        setVerificationResult({
+          valid: false,
+          message: `Chain Verification FAILED at Block #${rec.blockNumber} (${rec.eventId}): ${check.reason}`,
+        });
+        return;
+      }
+      prev = rec.recordHash || rec.txHash;
+    }
+    setVerificationResult({
+      valid: true,
+      message: `Full Audit Chain Verified: All ${chronologicalRecords.length} blocks passed canonical SHA-256 payload digest & previous-hash linkage checks.`,
+    });
   };
 
   return (
     <div className="space-y-6">
       {/* Page Title & Subtitle */}
-      <div>
-        <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-          Blockchain Flood Event Registry & Audit Ledger
-        </h2>
-        <p className="text-sm text-slate-500">
-          Tamper-evident, cryptographically anchored audit trail of verified municipal flood events and emergency declarations.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+        <div>
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+            Prototype Audit Hash-Chain &amp; Flood Event Registry
+          </h2>
+          <p className="text-sm text-slate-500">
+            Tamper-evident, SHA-256 linked audit trail of verified municipal flood events (Simulated Ledger).
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleVerifyFullChain}
+          className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white font-bold text-xs shadow-xs flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+        >
+          <FileCheck2 className="w-4 h-4" />
+          <span>Verify Full Hash Chain</span>
+        </button>
       </div>
 
       {/* Mandatory Simulated Architecture Callout & Disclaimer */}
       <div className="p-4 bg-slate-900 text-slate-200 rounded-2xl border border-slate-800 shadow-md flex items-start gap-3.5 text-xs">
         <Lock className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
         <div>
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="font-bold text-white uppercase tracking-wider font-mono">
-              Tamper-Evident Audit Trail (Academic Demonstration Architecture)
+              Tamper-Evident SHA-256 Hash-Chain (Simulated Academic Ledger)
             </span>
-            <span className="bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded text-[10px] font-mono">
-              Sepolia Testnet Prepared
+            <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded text-[10px] font-mono">
+              Local Prototype Chain (No Mainnet/Testnet RPC)
             </span>
           </div>
           <p className="text-slate-300 leading-relaxed">
-            This module demonstrates how blockchain architectures provide tamper-evident records for disaster
-            compensations and municipal accountability. A blockchain audit trail proves that an incident report
-            has not been retrospectively modified or deleted; <strong>it does not provide independent physical proof
+            Each record computes a canonical SHA-256 <code>payloadHash</code> and chains <code>recordHash = SHA256(prevHash + eventId + timestamp + payloadHash)</code>.
+            This proves whether an incident snapshot has been modified after recording; <strong>it does not provide independent physical proof
             that a flood occurred</strong>. Photographs and personal contact details are never stored on public ledgers.
           </p>
         </div>
@@ -113,12 +176,12 @@ export const BlockchainRegistryPage: React.FC = () => {
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs flex items-center justify-between">
           <div>
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-              Confirmed Simulated Records
+              Sealed Hash-Chain Blocks
             </span>
             <span className="text-3xl font-extrabold text-emerald-600 font-mono tabular-nums">
               {verifiedRecords}
             </span>
-            <p className="text-xs text-emerald-700 font-medium mt-1">Multi-node consensus</p>
+            <p className="text-xs text-emerald-700 font-medium mt-1">SHA-256 linked prototype</p>
           </div>
           <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
             <ShieldCheck className="w-5 h-5" />
@@ -128,12 +191,12 @@ export const BlockchainRegistryPage: React.FC = () => {
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs flex items-center justify-between">
           <div>
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-              Pending Block Inclusion
+              Pending Inclusion
             </span>
             <span className="text-3xl font-extrabold text-amber-600 font-mono tabular-nums">
               {pendingRecords}
             </span>
-            <p className="text-xs text-amber-700 font-medium mt-1">Awaiting validator seal</p>
+            <p className="text-xs text-amber-700 font-medium mt-1">Awaiting next snapshot</p>
           </div>
           <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
             <Clock className="w-5 h-5" />
@@ -141,10 +204,20 @@ export const BlockchainRegistryPage: React.FC = () => {
         </div>
       </div>
 
-      {verifiedHashNotice && (
-        <div className="p-3.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl text-xs flex items-center gap-2">
-          <Check className="w-4 h-4 text-emerald-600" />
-          <span>{verifiedHashNotice}</span>
+      {verificationResult && (
+        <div
+          className={`p-3.5 rounded-xl border text-xs flex items-center gap-2 ${
+            verificationResult.valid
+              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+              : 'bg-red-50 text-red-800 border-red-200'
+          }`}
+        >
+          {verificationResult.valid ? (
+            <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+          ) : (
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+          )}
+          <span>{verificationResult.message}</span>
         </div>
       )}
 
@@ -343,23 +416,32 @@ export const BlockchainRegistryPage: React.FC = () => {
                 </p>
               </div>
 
-              {/* Merkle Root */}
+              {/* Merkle Root & Prev Hash Link */}
               <div>
                 <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1 font-mono">
-                  Merkle State Root (SHA-256)
+                  Previous Block Hash (prevHash)
                 </span>
                 <p className="font-mono text-[11px] text-slate-600 bg-slate-50 p-2 rounded-lg break-all border border-slate-200">
-                  {selectedTx.merkleRoot}
+                  {selectedTx.prevHash || getExpectedPrevHash(selectedTx)}
+                </p>
+              </div>
+
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1 font-mono">
+                  Payload Digest (SHA-256)
+                </span>
+                <p className="font-mono text-[11px] text-slate-600 bg-slate-50 p-2 rounded-lg break-all border border-slate-200">
+                  {selectedTx.payloadHash}
                 </p>
               </div>
 
               <button
                 type="button"
                 onClick={() => handleVerifyHashProof(selectedTx)}
-                className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-xs font-sans"
+                className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-xs font-sans cursor-pointer"
               >
                 <FileCheck2 className="w-4 h-4 text-cyan-400" />
-                <span>Verify Merkle State Proof</span>
+                <span>Recompute &amp; Verify Block Hash Proof</span>
               </button>
 
               <div className="pt-2 border-t border-slate-100 text-[11px] text-slate-500 flex items-start gap-1.5 leading-tight font-sans">

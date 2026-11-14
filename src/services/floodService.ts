@@ -9,7 +9,6 @@ import {
   BlockchainRecord,
   simulateAiVerification,
   getWaterLevelSeverity,
-  evaluateRiskLevel,
   generateSimulatedBlockchainRecord,
   clusterReports,
   ClusteringConfig,
@@ -22,6 +21,7 @@ import {
   areReportsDuplicate,
   validateCoordinates,
   generateReportId,
+  GENESIS_PREV_HASH,
 } from '../utils/floodLogic';
 import {
   INITIAL_REPORTS,
@@ -29,7 +29,14 @@ import {
   INITIAL_BLOCKCHAIN_RECORDS,
   INITIAL_WEATHER_FORECAST,
 } from '../data/demonstrationData';
-import { db, auth, isFirebaseConfigured, googleProvider, uploadPhotographToStorage } from './firebase';
+import {
+  db,
+  auth,
+  isFirebaseConfigured,
+  googleProvider,
+  uploadPhotographToStorage,
+  deleteStoragePath,
+} from './firebase';
 import {
   collection,
   doc,
@@ -39,6 +46,7 @@ import {
   updateDoc,
   query,
   orderBy,
+  where,
   onSnapshot,
   Unsubscribe,
   serverTimestamp,
@@ -57,7 +65,12 @@ export interface WeatherData {
   windDirection: string;
   updatedAt: string;
   source: string;
+  provider?: string;
+  forecastAvailable?: boolean;
+  forecastTimeRange?: string;
+  rainfallUnit?: string;
   isLive: boolean;
+  isUsingDemonstrationFallback?: boolean;
   status: string;
 }
 
@@ -66,6 +79,15 @@ export interface ServiceState {
   error: string | null;
   lastSyncTime: string | null;
   dataSource: DataSourceMode;
+}
+
+async function fileToBase64DataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Failed to read image file for AI verification'));
+    reader.readAsDataURL(file);
+  });
 }
 
 class FloodService {
@@ -77,9 +99,41 @@ class FloodService {
   private riskThresholds: RiskThresholdConfig = { ...DEFAULT_RISK_THRESHOLDS };
 
   constructor() {
-    const savedMode = localStorage.getItem('floodsense_data_mode') as DataSourceMode;
-    if (savedMode && (savedMode === 'DEMO' || savedMode === 'FIREBASE')) {
-      this.mode = savedMode;
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const savedMode = localStorage.getItem('floodsense_data_mode') as DataSourceMode;
+      if (savedMode && (savedMode === 'DEMO' || savedMode === 'FIREBASE')) {
+        this.mode = savedMode;
+      }
+      this.hydrateDemoCacheFromStorage();
+    }
+  }
+
+  private hydrateDemoCacheFromStorage(): void {
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return;
+      const savedReports = localStorage.getItem('floodsense_reports_v2');
+      if (savedReports) {
+        const parsed = JSON.parse(savedReports);
+        if (Array.isArray(parsed) && parsed.length > 0) this.inMemoryReports = parsed;
+      }
+      const savedHotspots = localStorage.getItem('floodsense_hotspots_v2');
+      if (savedHotspots) {
+        const parsed = JSON.parse(savedHotspots);
+        if (Array.isArray(parsed) && parsed.length > 0) this.inMemoryHotspots = parsed;
+      }
+      const savedBlockchain = localStorage.getItem('floodsense_blockchain_v2');
+      if (savedBlockchain) {
+        const parsed = JSON.parse(savedBlockchain);
+        if (Array.isArray(parsed) && parsed.length > 0) this.inMemoryBlockchain = parsed;
+      }
+    } catch {
+      // Fall back to initial demonstration arrays
+    }
+  }
+
+  public syncDemoReports(reports: FloodReport[]): void {
+    if (Array.isArray(reports)) {
+      this.inMemoryReports = [...reports];
     }
   }
 
@@ -112,23 +166,43 @@ class FloodService {
     return { ...this.riskThresholds };
   }
 
+  private async getBearerHeaders(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.currentUser) {
+      try {
+        const token = await auth.currentUser.getIdToken();
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+      } catch {}
+    }
+    return headers;
+  }
+
   // --- Live Weather API ---
-  public async fetchLiveWeather(): Promise<WeatherData> {
+  public async fetchLiveWeather(lat?: number, lng?: number): Promise<WeatherData> {
     try {
-      const res = await fetch('/api/weather/colombo');
+      const qs =
+        typeof lat === 'number' && typeof lng === 'number'
+          ? `?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
+          : '';
+      const res = await fetch(`/api/weather/colombo${qs}`);
       if (res.ok) {
         const data = await res.json();
         return {
           currentTempC: data.currentTempC ?? 28,
-          condition: data.condition ?? 'Monsoonal Heavy Downpour',
-          currentRainfallMm: data.currentRainfallMm ?? 34.5,
-          expected3hRainfallMm: data.expected3hRainfallMm ?? 48.0,
-          humidityPercent: data.humidityPercent ?? 92,
-          windSpeedKmh: data.windSpeedKmh ?? 24,
+          condition: data.condition ?? 'Overcast',
+          currentRainfallMm: data.currentRainfallMm ?? 0,
+          expected3hRainfallMm: data.expected3hRainfallMm ?? 0,
+          humidityPercent: data.humidityPercent ?? 85,
+          windSpeedKmh: data.windSpeedKmh ?? 15,
           windDirection: data.windDirection ?? 'SW',
           updatedAt: data.updatedAt ?? 'Live (Asia/Colombo)',
           source: data.source ?? 'Open-Meteo Forecast API',
+          provider: data.provider ?? data.source ?? 'Open-Meteo Forecast API',
+          forecastAvailable: data.forecastAvailable ?? true,
+          forecastTimeRange: data.forecastTimeRange ?? 'Asia/Colombo +3h',
+          rainfallUnit: data.rainfallUnit ?? 'mm',
           isLive: !!data.isLive,
+          isUsingDemonstrationFallback: Boolean(data.isUsingDemonstrationFallback ?? !data.isLive),
           status: data.status ?? 'Normal Conditions Monitoring',
         };
       }
@@ -137,24 +211,44 @@ class FloodService {
     }
     return {
       ...INITIAL_WEATHER_FORECAST,
+      provider: INITIAL_WEATHER_FORECAST.source,
+      forecastAvailable: false,
+      forecastTimeRange: 'Demonstration Snapshot',
+      rainfallUnit: 'mm',
       isLive: false,
+      isUsingDemonstrationFallback: true,
     };
   }
 
-  // --- AI Image Verification (Calls server-side Gemini 3.8 Flash) ---
+  // --- AI Image Verification (Calls server-side Gemini 4 Hydrogen) ---
   public async verifyImageWithAi(params: {
     imageBase64?: string;
     mimeType?: string;
     description: string;
     waterLevel: string;
     floodType: string;
-    simulateFailure?: boolean;
   }): Promise<AiVerificationDetails> {
+    if (!params.imageBase64 || !params.imageBase64.trim()) {
+      return simulateAiVerification({
+        waterLevel: params.waterLevel,
+        floodType: params.floodType,
+        hasImage: false,
+        description: params.description,
+      });
+    }
+
     try {
+      const headers = await this.getBearerHeaders();
       const res = await fetch('/api/ai/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
+        headers,
+        body: JSON.stringify({
+          imageBase64: params.imageBase64,
+          mimeType: params.mimeType,
+          description: params.description,
+          waterLevel: params.waterLevel,
+          floodType: params.floodType,
+        }),
       });
 
       const data = await res.json().catch(() => null);
@@ -162,24 +256,22 @@ class FloodService {
         return data as AiVerificationDetails;
       }
 
-      // If server responded with error (e.g. 502/503 Gemini failure), return honest FAILED state
       if (data && data.aiAssessment) {
         return data as AiVerificationDetails;
       }
 
-      throw new Error(`AI service returned HTTP ${res.status}`);
+      throw new Error(data?.error || `AI service returned HTTP ${res.status}`);
     } catch (err: any) {
       console.warn('Server AI verification failed:', err?.message);
-      // Never invent a successful AI result when AI service fails!
       return {
-        method: 'Gemini 3.8 Flash (Multimodal)',
-        modelName: 'gemini-3.8-flash',
+        method: 'Gemini 4 Hydrogen (Multimodal)',
+        modelName: 'gemini-4-hydrogen',
         aiStatus: 'FAILED',
         hasVisibleFlooding: false,
         aiAssessment: 'AI Processing Failed',
         officialStatus: 'Under Review',
-        confidence: 0,
-        explanation: `AI vision verification failed (${err?.message || 'Service unavailable'}). Your report has been saved and queued for officer review.`,
+        confidence: null,
+        explanation: `AI vision verification failed (${err?.message || 'Service unavailable'}). Your report has been saved safely and queued for officer review.`,
         uncertainty: 'AI assessment could not be completed. Retry available.',
         waterLevelEstimated: params.waterLevel,
         roadAccessibilityEstimated: 'Uncertain',
@@ -195,9 +287,14 @@ class FloodService {
   public async getReports(): Promise<FloodReport[]> {
     if (this.mode === 'FIREBASE') {
       if (isFirebaseConfigured() && db) {
+        if (!auth?.currentUser) {
+          // Public visitors read sanitized public_reports (zero PII)
+          const pubQ = query(collection(db, 'public_reports'), orderBy('timestamp', 'desc'));
+          const pubSnap = await getDocs(pubQ);
+          return pubSnap.docs.map((docSnap) => docSnap.data() as FloodReport);
+        }
         const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'));
         const snapshot = await getDocs(q);
-        // Important: If Firestore is empty, return empty cloud dataset. Do NOT replace with demo data.
         return snapshot.docs.map((docSnap) => docSnap.data() as FloodReport);
       }
       return [];
@@ -224,7 +321,6 @@ class FloodService {
       customImage?: string;
       imageMimeType?: string;
       onUploadProgress?: (percent: number) => void;
-      simulateAiFailure?: boolean;
     }
   ): Promise<{
     report: FloodReport;
@@ -233,17 +329,36 @@ class FloodService {
     isDuplicate?: boolean;
     duplicateOfId?: string;
   }> {
-    const timestamp = new Date().toISOString();
-    // Collision-resistant identifier
-    const newId = generateReportId();
-
-    // Validate coordinates
     if (!validateCoordinates(reportInput.lat, reportInput.lng)) {
       throw new Error(`Invalid GPS coordinates: lat=${reportInput.lat}, lng=${reportInput.lng}`);
     }
 
-    // Check for potential duplicate reports within 25m and 5 minutes
     const existingReports = this.mode === 'FIREBASE' ? await this.getReports() : this.inMemoryReports;
+
+    // Idempotency guard against duplicate button clicks
+    if (reportInput.submissionRequestId) {
+      const prior = existingReports.find((r) => r.submissionRequestId === reportInput.submissionRequestId);
+      if (prior) {
+        const priorHotspot =
+          this.inMemoryHotspots.find((h) => h.id === prior.hotspotId) ||
+          clusterReports([prior], this.clusteringConfig, undefined, this.riskThresholds)[0];
+        return {
+          report: prior,
+          hotspot: priorHotspot,
+          isDuplicate: prior.isDuplicate,
+          duplicateOfId: prior.duplicateOfReportId,
+        };
+      }
+    }
+
+    const timestamp = new Date().toISOString();
+    const newId = generateReportId();
+    const effectiveUid =
+      this.mode === 'FIREBASE' && auth?.currentUser?.uid
+        ? auth.currentUser.uid
+        : reportInput.reporterId || 'citizen_demo_user';
+
+    // Duplicate check within 25m and 5 minutes
     let duplicateOfId: string | undefined;
     const isDuplicate = existingReports.some((existing) => {
       const match = areReportsDuplicate(existing, {
@@ -255,33 +370,39 @@ class FloodService {
       return match;
     });
 
-    // Image Upload to Firebase Storage if file provided and in Firebase mode
+    // Resolve Base64 image for AI BEFORE or alongside upload (never send download URL as base64)
+    let aiImagePayload = reportInput.customImage;
+    if (!aiImagePayload && reportInput.imageFile) {
+      aiImagePayload = await fileToBase64DataUrl(reportInput.imageFile);
+    }
+
+    // Upload photograph to Firebase Storage if file provided in FIREBASE mode
     let storedImageUrl: string | undefined = reportInput.imageUrl;
+    let uploadedStoragePath: string | null = null;
     if (reportInput.imageFile && this.mode === 'FIREBASE') {
-      storedImageUrl = await uploadPhotographToStorage(
+      const uploaded = await uploadPhotographToStorage(
         reportInput.imageFile,
-        reportInput.reporterId || 'citizen_anon',
+        effectiveUid,
         reportInput.onUploadProgress
       );
+      storedImageUrl = uploaded.downloadUrl;
+      uploadedStoragePath = uploaded.storagePath;
     } else if (reportInput.customImage) {
-      if (reportInput.onUploadProgress) {
-        reportInput.onUploadProgress(100);
-      }
+      if (reportInput.onUploadProgress) reportInput.onUploadProgress(100);
       storedImageUrl = reportInput.customImage;
     } else if (reportInput.onUploadProgress) {
       reportInput.onUploadProgress(100);
     }
 
-    // AI Verification: send Base64/local path representation to server
+    // AI verification (NOT_RUN if no photograph provided)
     let aiResult: AiVerificationDetails;
-    if (reportInput.customImage || storedImageUrl) {
+    if (aiImagePayload || (storedImageUrl && storedImageUrl.startsWith('/images/'))) {
       aiResult = await this.verifyImageWithAi({
-        imageBase64: reportInput.customImage || storedImageUrl,
-        mimeType: reportInput.imageMimeType || 'image/jpeg',
+        imageBase64: aiImagePayload || storedImageUrl,
+        mimeType: reportInput.imageMimeType || reportInput.imageFile?.type || 'image/jpeg',
         description: reportInput.description,
         waterLevel: reportInput.waterLevel,
         floodType: reportInput.floodType,
-        simulateFailure: reportInput.simulateAiFailure,
       });
     } else {
       aiResult = simulateAiVerification({
@@ -305,48 +426,51 @@ class FloodService {
       },
     ];
 
-    if (aiResult.aiStatus === 'COMPLETED') {
+    if (aiResult.aiStatus === 'COMPLETED' || aiResult.aiStatus === 'SIMULATED') {
       initialStatusHistory.push({
         status: 'Under Review',
         timestamp: new Date(Date.now() + 500).toISOString(),
         authorName: aiResult.method,
-        note: `AI Assessment: "${aiResult.aiAssessment}" (${aiResult.confidence}% confidence). Field verification required by emergency officer.`,
+        note: `AI Assessment: "${aiResult.aiAssessment}" (${aiResult.confidence ?? 'N/A'}% confidence). Field verification required by emergency officer.`,
       });
     }
 
-    // Strip non-serializable callbacks/files before constructing report
     const {
       imageFile: _imgFile,
       customImage: _customImg,
       imageMimeType: _mime,
       onUploadProgress: _onProg,
-      simulateAiFailure: _simFail,
       ...cleanReportFields
     } = reportInput;
 
-    // Form preliminary report object (AI NEVER auto-verifies!)
     const createdReport: FloodReport = {
       ...cleanReportFields,
       id: newId,
+      reporterId: effectiveUid,
       timestamp,
       riskLevel: calculatedRisk,
       verificationStatus: 'UNDER REVIEW',
-      incidentStatus: aiResult.aiStatus === 'COMPLETED' ? 'Under Review' : 'Submitted',
+      incidentStatus:
+        aiResult.aiStatus === 'COMPLETED' || aiResult.aiStatus === 'SIMULATED'
+          ? 'Under Review'
+          : 'Submitted',
       statusHistory: initialStatusHistory,
       aiConfidence: aiResult.confidence,
       aiClassification: aiResult.aiAssessment,
-      aiStatus: aiResult.aiStatus || 'COMPLETED',
+      aiStatus: aiResult.aiStatus || 'NOT_RUN',
       aiVerificationDetails: aiResult,
       imageUrl: storedImageUrl,
       isDuplicate,
       duplicateOfReportId: duplicateOfId,
     };
 
-    // Calculate updated clusters based on actual coordinates and temporal window
+    // Recluster with real area/forecast rainfall (without inventing 20mm fallback)
     const allReportsForClustering = [createdReport, ...existingReports];
     const rainfallByArea: Record<string, number> = {};
     this.inMemoryHotspots.forEach((h) => {
-      rainfallByArea[h.area] = h.forecastRainfallMm;
+      if (h.rainfallSource !== 'MISSING' && Number.isFinite(h.forecastRainfallMm)) {
+        rainfallByArea[h.area] = h.forecastRainfallMm;
+      }
     });
 
     const updatedHotspots = clusterReports(
@@ -356,115 +480,94 @@ class FloodService {
       this.riskThresholds
     );
 
-    // Find the hotspot containing the newly created report
-    let matchedHotspot = updatedHotspots.find((h) => h.associatedReportIds.includes(newId));
-    if (!matchedHotspot) {
-      const riskEval = evaluateRiskLevel(1, 20.0, this.riskThresholds);
-      matchedHotspot = {
-        id: `HS-0${50 + updatedHotspots.length}`,
-        location: `${reportInput.location}`,
-        area: reportInput.area,
-        lat: reportInput.lat,
-        lng: reportInput.lng,
-        reportCount: 1,
-        firstReportedTime: timestamp,
-        latestReportedTime: timestamp,
-        riskLevel: riskEval.riskLevel,
-        riskScore: riskEval.score,
-        forecastRainfallMm: 20.0,
-        verificationStatus: 'UNDER REVIEW',
-        precaution: riskEval.precaution,
-        associatedReportIds: [newId],
-        clusterRadiusMeters: this.clusteringConfig.spatialRadiusMeters,
-      };
-      updatedHotspots.unshift(matchedHotspot);
-    }
+    const matchedHotspot =
+      updatedHotspots.find((h) => h.associatedReportIds.includes(newId)) ||
+      clusterReports([createdReport], this.clusteringConfig, rainfallByArea, this.riskThresholds)[0];
 
     createdReport.hotspotId = matchedHotspot.id;
 
-    // Generate blockchain audit record if high risk
+    // Anchor to prototype SHA-256 hash chain if high risk
     let createdBlockchainRecord: BlockchainRecord | undefined;
     if (matchedHotspot.riskLevel === 'HIGH') {
+      const latestRecord = this.inMemoryBlockchain[0];
       createdBlockchainRecord = generateSimulatedBlockchainRecord(
         matchedHotspot.id,
         matchedHotspot.location,
-        'HIGH'
+        'HIGH',
+        {
+          prevHash: latestRecord?.recordHash || GENESIS_PREV_HASH,
+          blockNumber: (latestRecord?.blockNumber || 0) + 1,
+        }
       );
     }
 
-    // Persist in-memory state
+    // Persist in-memory state when in DEMO mode (or update cache)
     this.inMemoryReports = [createdReport, ...this.inMemoryReports];
     this.inMemoryHotspots = updatedHotspots;
     if (createdBlockchainRecord) {
       this.inMemoryBlockchain = [createdBlockchainRecord, ...this.inMemoryBlockchain];
     }
 
-    // If Firebase active, persist to Cloud Firestore (Without large base64 strings!)
+    // Cloud Firestore persistence in FIREBASE mode
     if (this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
       try {
-        // Sanitize payload: never write base64 strings to Firestore
-        const firestoreReportPayload = {
+        const firestoreReportPayload: Record<string, any> = {
           ...createdReport,
           createdAt: serverTimestamp(),
         };
-        // Clean out raw local file bytes if present
-        delete (firestoreReportPayload as any).imageFile;
-        delete (firestoreReportPayload as any).customImage;
+        delete firestoreReportPayload.imageFile;
+        delete firestoreReportPayload.customImage;
 
         await setDoc(doc(db, 'reports', newId), firestoreReportPayload);
 
-        // Write status_history entries
         for (let idx = 0; idx < createdReport.statusHistory.length; idx++) {
           const entry = createdReport.statusHistory[idx];
           await setDoc(doc(db, 'status_history', `${newId}_h_${idx}`), {
             reportId: newId,
+            citizenUid: effectiveUid,
             ...entry,
           });
         }
 
-        // Write notification record for citizen & triage center
         await setDoc(doc(db, 'notifications', `notif_${newId}`), {
           reportId: newId,
-          recipientId: createdReport.reporterId || 'citizen_anon',
+          recipientUid: effectiveUid,
           title: `Report ${newId} Submitted`,
-          message:
+          description:
             aiResult.aiStatus === 'FAILED'
               ? `Report saved at ${createdReport.location}. AI verification failed; queued for officer review.`
+              : aiResult.aiStatus === 'NOT_RUN'
+              ? `Text report saved at ${createdReport.location}. Queued for manual officer inspection.`
               : `Report submitted at ${createdReport.location}. AI assessment: ${aiResult.aiAssessment}.`,
           status: createdReport.incidentStatus,
+          severity: createdReport.riskLevel,
+          type: 'NEW_REPORT',
+          location: createdReport.location,
           createdAt: serverTimestamp(),
           unread: true,
         });
 
-        // Also write public sanitized report (Zero PII)
-        const publicReportPayload = {
-          id: createdReport.id,
-          location: createdReport.location,
-          area: createdReport.area,
-          lat: createdReport.lat,
-          lng: createdReport.lng,
-          waterLevel: createdReport.waterLevel,
-          roadAccessibility: createdReport.roadAccessibility,
-          floodType: createdReport.floodType,
-          riskLevel: createdReport.riskLevel,
-          incidentStatus: createdReport.incidentStatus,
-          verificationStatus: createdReport.verificationStatus,
-          timestamp: createdReport.timestamp,
-          imageUrl: createdReport.imageUrl || '',
-          description: createdReport.description,
-          hotspotId: matchedHotspot.id,
-        };
-        await setDoc(doc(db, 'public_reports', newId), publicReportPayload);
-
-        await setDoc(doc(db, 'hotspots', matchedHotspot.id), matchedHotspot);
-
-        if (createdBlockchainRecord) {
-          await setDoc(
-            doc(db, 'blockchain_records', createdBlockchainRecord.eventId),
-            createdBlockchainRecord
-          );
+        // Trusted backend sync for public_reports, hotspots, and audit trail
+        try {
+          const headers = await this.getBearerHeaders();
+          const syncRes = await fetch('/api/reports/public-sync', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              report: createdReport,
+              hotspot: matchedHotspot,
+              blockchainRecord: createdBlockchainRecord,
+            }),
+          });
+          if (!syncRes.ok && syncRes.status !== 501) {
+            console.warn('Backend public-sync returned non-OK status:', syncRes.status);
+          }
+        } catch (syncErr) {
+          console.warn('Backend public-sync unavailable:', syncErr);
         }
       } catch (err: any) {
+        // Clean up orphaned Storage upload on Firestore failure
+        await deleteStoragePath(uploadedStoragePath);
         console.error('Firestore write failed:', err);
         throw new Error(`Cloud database write failed: ${err.message || 'Permission denied'}`);
       }
@@ -479,11 +582,14 @@ class FloodService {
     };
   }
 
-  // --- Retry AI Verification for Failed/Pending Reports ---
+  // --- Retry AI Verification ---
   public async retryAiVerification(
     reportId: string,
-    override?: { customImage?: string; mimeType?: string; simulateFailure?: boolean }
+    override?: { customImage?: string; mimeType?: string }
   ): Promise<FloodReport | null> {
+    if (this.mode === 'DEMO') {
+      this.hydrateDemoCacheFromStorage();
+    }
     let target = this.inMemoryReports.find((r) => r.id === reportId) || null;
     if (!target && this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
       const snap = await getDoc(doc(db, 'reports', reportId));
@@ -493,18 +599,19 @@ class FloodService {
     }
     if (!target) return null;
 
+    const imageInput = override?.customImage || target.imageUrl;
     const aiResult = await this.verifyImageWithAi({
-      imageBase64: override?.customImage || target.imageUrl,
+      imageBase64: imageInput,
       mimeType: override?.mimeType || 'image/jpeg',
       description: target.description,
       waterLevel: target.waterLevel,
       floodType: target.floodType,
-      simulateFailure: override?.simulateFailure,
     });
 
     const timestamp = new Date().toISOString();
     const shouldMoveToUnderReview =
-      aiResult.aiStatus === 'COMPLETED' && target.incidentStatus === 'Submitted';
+      (aiResult.aiStatus === 'COMPLETED' || aiResult.aiStatus === 'SIMULATED') &&
+      target.incidentStatus === 'Submitted';
 
     const nextStatus: IncidentStatus = shouldMoveToUnderReview
       ? 'Under Review'
@@ -515,9 +622,9 @@ class FloodService {
       timestamp,
       authorName: aiResult.method,
       note:
-        aiResult.aiStatus === 'COMPLETED'
-          ? `Retry AI Assessment completed: "${aiResult.aiAssessment}" (${aiResult.confidence}% confidence). Human officer review required.`
-          : `Retry AI Assessment failed: ${aiResult.explanation}`,
+        aiResult.aiStatus === 'COMPLETED' || aiResult.aiStatus === 'SIMULATED'
+          ? `Retry AI Assessment completed: "${aiResult.aiAssessment}" (${aiResult.confidence ?? 'N/A'}% confidence). Human officer review required.`
+          : `Retry AI Assessment did not run/failed: ${aiResult.explanation}`,
     };
 
     const updatedReport: FloodReport = {
@@ -525,7 +632,7 @@ class FloodService {
       incidentStatus: nextStatus,
       aiConfidence: aiResult.confidence,
       aiClassification: aiResult.aiAssessment,
-      aiStatus: aiResult.aiStatus || 'COMPLETED',
+      aiStatus: aiResult.aiStatus || 'FAILED',
       aiVerificationDetails: aiResult,
       statusHistory: [...(target.statusHistory || []), historyEntry],
     };
@@ -557,6 +664,9 @@ class FloodService {
     officerNote?: string
   ): Promise<FloodReport | null> {
     const timestamp = new Date().toISOString();
+    if (this.mode === 'DEMO') {
+      this.hydrateDemoCacheFromStorage();
+    }
     const existingIndex = this.inMemoryReports.findIndex((r) => r.id === reportId);
     if (existingIndex === -1 && this.mode === 'DEMO') return null;
 
@@ -604,24 +714,27 @@ class FloodService {
 
         await setDoc(doc(db, 'status_history', `${reportId}_h_${Date.now()}`), {
           reportId,
+          citizenUid: updatedReport.reporterId || '',
           ...newEntry,
         });
 
         await setDoc(doc(db, 'notifications', `notif_${reportId}_${Date.now()}`), {
           reportId,
-          recipientId: updatedReport.reporterId || 'citizen_anon',
+          recipientUid: updatedReport.reporterId || '',
           title: `Incident ${reportId} Updated: ${newStatus}`,
-          message: officerNote || `Status updated to ${newStatus} by ${authorName}.`,
+          description: officerNote || `Status updated to ${newStatus} by ${authorName}.`,
           status: newStatus,
+          severity: newStatus === 'Alert Issued' ? 'HIGH' : 'MEDIUM',
+          type: 'OFFICER_UPDATE',
+          location: updatedReport.location || '',
           createdAt: serverTimestamp(),
           unread: true,
         });
 
-        // Also update public sanitized collection
         await updateDoc(doc(db, 'public_reports', reportId), {
           incidentStatus: updatedReport.incidentStatus,
           verificationStatus: updatedReport.verificationStatus,
-        });
+        }).catch(() => {});
       } catch (err: any) {
         console.error('Firestore status update failed:', err);
         throw new Error(`Failed to update incident in Cloud Firestore: ${err.message}`);
@@ -643,6 +756,15 @@ class FloodService {
     return [...this.inMemoryHotspots];
   }
 
+  public async persistHotspots(hotspots: FloodHotspot[]): Promise<void> {
+    this.inMemoryHotspots = [...hotspots];
+    if (this.mode === 'FIREBASE' && isFirebaseConfigured() && db) {
+      for (const h of hotspots) {
+        await setDoc(doc(db, 'hotspots', h.id), h, { merge: true }).catch(() => {});
+      }
+    }
+  }
+
   // --- Blockchain Records ---
   public async getBlockchainRecords(): Promise<BlockchainRecord[]> {
     if (this.mode === 'FIREBASE') {
@@ -661,7 +783,8 @@ class FloodService {
     onError: (error: Error) => void
   ): Unsubscribe | null {
     if (this.mode !== 'FIREBASE' || !isFirebaseConfigured() || !db) return null;
-    const q = query(collection(db, 'reports'), orderBy('timestamp', 'desc'));
+    const targetCol = auth?.currentUser ? 'reports' : 'public_reports';
+    const q = query(collection(db, targetCol), orderBy('timestamp', 'desc'));
     return onSnapshot(
       q,
       (snapshot) => {
@@ -691,6 +814,39 @@ class FloodService {
     );
   }
 
+  public subscribeToNotifications(
+    uid: string,
+    isOfficer: boolean,
+    onUpdate: (items: any[]) => void,
+    onError: (error: Error) => void
+  ): Unsubscribe | null {
+    if (this.mode !== 'FIREBASE' || !isFirebaseConfigured() || !db || !uid) return null;
+    const q = isOfficer
+      ? query(collection(db, 'notifications'), orderBy('createdAt', 'desc'))
+      : query(
+          collection(db, 'notifications'),
+          where('recipientUid', '==', uid),
+          orderBy('createdAt', 'desc')
+        );
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        onUpdate(
+          snapshot.docs.map((d) => ({
+            id: d.id,
+            ...d.data(),
+          }))
+        );
+      },
+      (err) => onError(err)
+    );
+  }
+
+  public async markNotificationReadInFirestore(notificationId: string): Promise<void> {
+    if (this.mode !== 'FIREBASE' || !isFirebaseConfigured() || !db) return;
+    await updateDoc(doc(db, 'notifications', notificationId), { unread: false }).catch(() => {});
+  }
+
   // --- Data Reset (Demonstration Mode Only) ---
   public resetDemonstrationData(options?: { resetSettings?: boolean }): void {
     this.inMemoryReports = [...INITIAL_REPORTS];
@@ -717,9 +873,9 @@ class FloodService {
     phone?: string
   ): Promise<void> {
     if (!isFirebaseConfigured() || !db) return;
-    // Public registration MUST always assign lowest-privilege citizen role
     await setDoc(doc(db, 'users', uid), {
       uid,
+      displayName: name,
       name,
       email,
       phone: phone || '',
@@ -729,17 +885,28 @@ class FloodService {
     });
   }
 
+  public async updateUserProfileInFirestore(
+    uid: string,
+    updates: { name?: string; phone?: string; department?: string; emergencySector?: string }
+  ): Promise<void> {
+    if (this.mode !== 'FIREBASE' || !isFirebaseConfigured() || !db || !uid) return;
+    await updateDoc(doc(db, 'users', uid), {
+      ...(updates.name ? { displayName: updates.name, name: updates.name } : {}),
+      ...(updates.phone !== undefined ? { phone: updates.phone } : {}),
+      ...(updates.department !== undefined ? { department: updates.department } : {}),
+      ...(updates.emergencySector !== undefined ? { emergencySector: updates.emergencySector } : {}),
+    });
+  }
+
   public async getAuthoritativeFirebaseRole(user: any): Promise<'officer' | 'citizen'> {
     if (!user) return 'citizen';
     try {
-      // 1. Check Firebase Auth custom token claims
       if (typeof user.getIdTokenResult === 'function') {
         const tokenResult = await user.getIdTokenResult();
-        if (tokenResult?.claims?.role === 'officer' || tokenResult?.claims?.officer === true) {
+        if (tokenResult?.claims?.role === 'officer' || tokenResult?.claims?.officer === true || tokenResult?.claims?.role === 'admin') {
           return 'officer';
         }
       }
-      // 2. Check Firestore authoritative officers / users collections (never localStorage!)
       if (db && user.uid) {
         const officerSnap = await getDoc(doc(db, 'officers', user.uid));
         if (officerSnap.exists() && officerSnap.data()?.active !== false) {

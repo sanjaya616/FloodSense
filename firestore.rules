@@ -16,6 +16,13 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.role == 'admin' ||
+        request.auth.token.admin == true
+      );
+    }
+
     // Officers are validated strictly via custom token claims or trusted server document
     function isOfficer() {
       return isSignedIn() && (
@@ -25,8 +32,12 @@ service cloud.firestore {
       );
     }
 
+    function isPrivileged() {
+      return isOfficer() || isAdmin();
+    }
+
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function incoming() {
@@ -47,8 +58,11 @@ service cloud.firestore {
     function isValidReport(data) {
       return data.keys().hasAll(['id', 'location', 'area', 'lat', 'lng', 'waterLevel', 'roadAccessibility', 'floodType', 'riskLevel', 'incidentStatus', 'reporterId'])
         && data.id is string && data.id.size() <= 64
-        && data.location is string && data.location.size() <= 200
-        && data.area is string && data.area.size() <= 80
+        && data.location is string && data.location.size() > 0 && data.location.size() <= 200
+        && data.area is string && data.area.size() > 0 && data.area.size() <= 80
+        && (!('description' in data) || (data.description is string && data.description.size() <= 2000))
+        && (!('submissionRequestId' in data) || (data.submissionRequestId is string && data.submissionRequestId.size() <= 128))
+        && (!('aiStatus' in data) || data.aiStatus in ['NOT_RUN', 'PENDING', 'COMPLETED', 'FAILED', 'SIMULATED'])
         && isValidCoordinates(data.lat, data.lng)
         && data.waterLevel in ['Low', 'Moderate', 'High', 'Severe']
         && data.roadAccessibility in ['Open', 'Partially Blocked', 'Completely Blocked']
@@ -58,108 +72,111 @@ service cloud.firestore {
         && data.reporterId is string && data.reporterId.size() <= 128;
     }
 
-    // Users collection: Private user accounts
-    // Users CANNOT assign themselves roles or modify role attributes
+    // Users collection: Private user accounts (client cannot elevate role)
     match /users/{userId} {
-      allow get: if isOwner(userId) || isOfficer();
-      allow list: if isOfficer();
+      allow get: if isOwner(userId) || isPrivileged();
+      allow list: if isPrivileged();
       allow create: if isOwner(userId)
         && isValidId(userId)
         && incoming().uid == userId
-        // New registrations may ONLY create a citizen profile (never officer/admin)
         && (!('role' in incoming()) || incoming().role == 'citizen')
         && (!('isOfficer' in incoming()) || incoming().isOfficer == false);
       allow update: if isOwner(userId)
         && isValidId(userId)
         && incoming().uid == userId
-        // Enforce role immutability from client: users cannot self-assign role or officer privileges
         && (!('role' in incoming()) || incoming().role == existing().role)
         && (!('isOfficer' in incoming()) || incoming().isOfficer == existing().isOfficer);
-      allow delete: if isOwner(userId) || isOfficer();
+      allow delete: if isOwner(userId) || isAdmin();
     }
 
     // Trusted Officers Registry (Managed strictly by Firebase Admin SDK server-side)
     match /officers/{officerId} {
-      allow read: if isOfficer();
-      allow write: if false; // Only server-side Firebase Admin SDK can grant officer privileges
+      allow read: if isPrivileged();
+      allow write: if false;
     }
 
     // Reports collection: Full incident reports with reporter PII
-    // PII Protection: Only the creator of the report or an authorized officer can read full reports
     match /reports/{reportId} {
-      allow get: if isSignedIn() && (resource.data.reporterId == request.auth.uid || isOfficer());
-      allow list: if isSignedIn() && (resource.data.reporterId == request.auth.uid || isOfficer());
-      
-      // Citizen report submission: Must be authenticated and reporterId must match request.auth.uid
+      allow get: if isSignedIn() && (resource.data.reporterId == request.auth.uid || isPrivileged());
+      allow list: if isSignedIn() && (resource.data.reporterId == request.auth.uid || isPrivileged());
+
       allow create: if isSignedIn()
         && isValidId(reportId)
         && isValidReport(incoming())
         && incoming().reporterId == request.auth.uid
-        && incoming().incidentStatus == 'Submitted'
+        && incoming().incidentStatus in ['Submitted', 'Under Review']
         && incoming().verificationStatus == 'UNDER REVIEW';
 
-      // Updates:
-      // 1. Citizen updating description/image while Submitted or More Info Requested (cannot alter AI, verification, risk, officer notes)
-      // 2. Authorized officer updating official verification and incident status
       allow update: if isValidId(reportId) && isValidReport(incoming()) && (
         (isOwner(existing().reporterId)
           && existing().incidentStatus in ['Submitted', 'More Info Requested']
           && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'additionalObservations', 'imageUrl'])) ||
-        (isOfficer()
+        (isPrivileged()
           && incoming().diff(existing()).affectedKeys().hasOnly(['incidentStatus', 'verificationStatus', 'officerNotes', 'statusHistory', 'verificationTimestamp', 'verifiedBy', 'riskLevel', 'aiConfidence', 'aiClassification', 'aiStatus', 'aiVerificationDetails']))
       );
 
-      // Deletion: Only owner (if not verified yet) or officer
-      allow delete: if (isOwner(existing().reporterId) && existing().incidentStatus == 'Submitted') || isOfficer();
+      allow delete: if (isOwner(existing().reporterId) && existing().incidentStatus == 'Submitted') || isPrivileged();
     }
 
-    // Public sanitized incident reports (Used for public GIS maps - ZERO PII: No phone numbers, no emails)
+    // Public sanitized incident reports (Zero PII).
+    // Citizen submissions sync via backend Admin SDK (/api/reports/public-sync); direct client writes restricted to officers/admins.
     match /public_reports/{reportId} {
-      allow read: if true; // Public access for citizen flood awareness
-      allow create, update: if isSignedIn() && isValidId(reportId)
+      allow read: if true;
+      allow create, update: if isPrivileged()
+        && isValidId(reportId)
         && (!('reporterPhone' in incoming()))
-        && (!('reporterEmail' in incoming()));
-      allow delete: if isOfficer();
+        && (!('reporterEmail' in incoming()))
+        && (!('reporterId' in incoming()));
+      allow delete: if isPrivileged();
     }
 
-    // Notifications collection: Scoped per citizen recipient or officers
+    // Notifications collection: Scoped per citizen recipientUid or privileged officers
     match /notifications/{notificationId} {
-      allow get, list: if isSignedIn() && (resource.data.recipientUid == request.auth.uid || isOfficer());
-      allow create: if isSignedIn() && (isOfficer() || incoming().recipientUid == request.auth.uid);
-      allow update: if isSignedIn() && (resource.data.recipientUid == request.auth.uid || isOfficer())
+      allow get, list: if isSignedIn() && (resource.data.recipientUid == request.auth.uid || isPrivileged());
+      allow create: if isSignedIn()
+        && isValidId(notificationId)
+        && incoming().recipientUid is string
+        && (isPrivileged() || incoming().recipientUid == request.auth.uid);
+      allow update: if isSignedIn()
+        && (resource.data.recipientUid == request.auth.uid || isPrivileged())
         && incoming().diff(existing()).affectedKeys().hasOnly(['unread']);
-      allow delete: if isOfficer();
+      allow delete: if isPrivileged();
     }
 
-    // Status History collection: Audit trail entries linked to reports
+    // Status History collection: Audit trail entries scoped by citizenUid
     match /status_history/{historyId} {
-      allow get, list: if isSignedIn() && (resource.data.citizenUid == request.auth.uid || isOfficer());
-      allow create: if isSignedIn() && (
-        (incoming().citizenUid == request.auth.uid && incoming().status == 'Submitted') ||
-        isOfficer()
-      );
+      allow get, list: if isSignedIn() && (resource.data.citizenUid == request.auth.uid || isPrivileged());
+      allow create: if isSignedIn()
+        && isValidId(historyId)
+        && incoming().citizenUid is string
+        && (
+          (incoming().citizenUid == request.auth.uid && incoming().status in ['Submitted', 'Under Review']) ||
+          isPrivileged()
+        );
       allow update, delete: if false; // Immutable audit history
     }
 
-    // System Settings collection: Clustering & risk thresholds (Read public/signed-in, write officer-only)
+    // System Settings collection
     match /system_settings/{settingId} {
       allow read: if isSignedIn();
-      allow write: if isOfficer();
+      allow write: if isPrivileged();
     }
 
-    // Hotspots collection: Public read for early warning; updates restricted to authorized officers / backend
+    // Hotspots collection: Public read; writes via Admin SDK or officers/admins
     match /hotspots/{hotspotId} {
       allow read: if true;
-      allow create, update, delete: if isOfficer();
+      allow create, update, delete: if isPrivileged();
     }
 
-    // Blockchain Event Registry: Public read for auditability; append-only by authorized officers
+    // Blockchain Event Registry: Public read for auditability; append-only by officers/Admin SDK
     match /blockchain_records/{recordId} {
       allow read: if true;
-      allow create: if isOfficer()
+      allow create: if isPrivileged()
         && isValidId(recordId)
-        && incoming().txHash is string;
-      allow update, delete: if false; // Truly immutable audit records
+        && incoming().txHash is string
+        && incoming().payloadHash is string
+        && incoming().recordHash is string;
+      allow update, delete: if false;
     }
   }
 }

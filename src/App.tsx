@@ -48,9 +48,20 @@ import { BlockchainRegistryPage } from './pages/BlockchainRegistryPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { MethodologyPage } from './pages/MethodologyPage';
 
+const AuthLoadingScreen: React.FC = () => (
+  <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
+    <div className="w-10 h-10 rounded-full border-4 border-cyan-600 border-t-transparent animate-spin mb-3" />
+    <p className="text-xs font-semibold text-slate-600">Verifying session credentials...</p>
+  </div>
+);
+
 const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated } = useFlood();
+  const { isAuthenticated, isAuthLoading } = useFlood();
   const location = useLocation();
+
+  if (isAuthLoading) {
+    return <AuthLoadingScreen />;
+  }
 
   if (!isAuthenticated) {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />;
@@ -59,9 +70,13 @@ const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 };
 
 const RequireOfficer: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, authenticatedRole, userProfile, logout } = useFlood();
+  const { isAuthenticated, isAuthLoading, authenticatedRole, userProfile, logout } = useFlood();
   const location = useLocation();
   const navigate = useNavigate();
+
+  if (isAuthLoading) {
+    return <AuthLoadingScreen />;
+  }
 
   if (!isAuthenticated) {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />;

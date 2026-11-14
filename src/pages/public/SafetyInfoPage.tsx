@@ -38,8 +38,8 @@ export const SafetyInfoPage: React.FC = () => {
           Colombo Monsoon Flood Safety Guide
         </h1>
         <p className="text-slate-600 text-sm mt-1.5 max-w-3xl leading-relaxed">
-          Official disaster precautions, vehicle survival protocols, and emergency contacts
-          curated from Disaster Management Centre (DMC) and Sri Lanka Red Cross directives.
+          Educational flood-safety precautions, vehicle protocols, and Sri Lanka emergency hotlines
+          (referencing public DMC 117 and Met Dept advisories; always follow official DMC directives during active emergencies).
         </p>
       </div>
 
@@ -136,8 +136,8 @@ export const SafetyInfoPage: React.FC = () => {
               Vehicle Safety: Turn Around, Don't Drown
             </h2>
             <p className="text-xs sm:text-sm text-slate-500">
-              More than half of flood-related fatalities occur when vehicles attempt to drive through
-              submerged roadways.
+              Driving into submerged roadways carries severe risk of engine stall, hidden culvert hazards,
+              and rapid loss of traction even in shallow moving water.
             </p>
           </div>
         </div>

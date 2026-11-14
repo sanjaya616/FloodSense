@@ -22,7 +22,7 @@ import {
 import { useFlood, DEMO_CREDENTIALS } from '../../context/FloodContext';
 
 export const LoginPage: React.FC = () => {
-  const { loginWithEmail, loginWithGoogle, requestPasswordReset, switchPersona } = useFlood();
+  const { loginWithEmail, loginWithGoogle, requestPasswordReset, switchPersona, dataSourceMode } = useFlood();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState('');
@@ -71,11 +71,13 @@ export const LoginPage: React.FC = () => {
   };
 
   const handleQuickDemoCitizen = () => {
+    if (dataSourceMode === 'FIREBASE') return;
     switchPersona('citizen');
     navigate('/citizen');
   };
 
   const handleQuickDemoOfficer = () => {
+    if (dataSourceMode === 'FIREBASE') return;
     switchPersona('officer');
     navigate('/officer/overview');
   };
@@ -120,63 +122,72 @@ export const LoginPage: React.FC = () => {
 
       <div className="mt-6 sm:mx-auto sm:w-full sm:max-w-md relative z-10 px-4 sm:px-0">
         <div className="bg-slate-950/80 backdrop-blur-md py-8 px-6 sm:px-8 rounded-3xl border border-slate-800 shadow-2xl space-y-6">
-          {/* Quick Demo Switcher Section */}
-          <div className="p-4 bg-slate-900/90 rounded-2xl border border-slate-800 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Instant Demo Access</span>
-              </span>
-              <span className="text-[10px] text-slate-400 font-mono">1-Click Evaluation</span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={handleQuickDemoCitizen}
-                className="p-2.5 bg-slate-800 hover:bg-slate-700/80 border border-slate-700 rounded-xl text-left transition-all group cursor-pointer"
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <User className="w-4 h-4 text-cyan-400" />
-                  <span className="text-xs font-bold text-white group-hover:text-cyan-400 transition-colors">
-                    Citizen Reporter
+          {/* Quick Demo Switcher Section (Strict DEMO mode only) */}
+          {dataSourceMode === 'DEMO' ? (
+            <>
+              <div className="p-4 bg-slate-900/90 rounded-2xl border border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Instant Demo Access</span>
                   </span>
+                  <span className="text-[10px] text-slate-400 font-mono">1-Click Evaluation</span>
                 </div>
-                <p className="text-[10px] text-slate-400 line-clamp-1 font-mono">
-                  {DEMO_CREDENTIALS.citizen.email}
-                </p>
-              </button>
 
-              <button
-                type="button"
-                onClick={handleQuickDemoOfficer}
-                className="p-2.5 bg-slate-800 hover:bg-slate-700/80 border border-slate-700 rounded-xl text-left transition-all group cursor-pointer"
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <ShieldAlert className="w-4 h-4 text-amber-400" />
-                  <span className="text-xs font-bold text-white group-hover:text-amber-400 transition-colors">
-                    Emergency Officer
-                  </span>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleQuickDemoCitizen}
+                    className="p-2.5 bg-slate-800 hover:bg-slate-700/80 border border-slate-700 rounded-xl text-left transition-all group cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <User className="w-4 h-4 text-cyan-400" />
+                      <span className="text-xs font-bold text-white group-hover:text-cyan-400 transition-colors">
+                        Citizen Reporter
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1 font-mono">
+                      {DEMO_CREDENTIALS.citizen.email}
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleQuickDemoOfficer}
+                    className="p-2.5 bg-slate-800 hover:bg-slate-700/80 border border-slate-700 rounded-xl text-left transition-all group cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <ShieldAlert className="w-4 h-4 text-amber-400" />
+                      <span className="text-xs font-bold text-white group-hover:text-amber-400 transition-colors">
+                        Emergency Officer
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1 font-mono">
+                      {DEMO_CREDENTIALS.officer.email}
+                    </p>
+                  </button>
                 </div>
-                <p className="text-[10px] text-slate-400 line-clamp-1 font-mono">
-                  {DEMO_CREDENTIALS.officer.email}
-                </p>
-              </button>
-            </div>
 
-            <div className="pt-1 border-t border-slate-800 text-[10px] text-slate-400 font-mono space-y-0.5">
-              <div>Citizen: {DEMO_CREDENTIALS.citizen.email} / {DEMO_CREDENTIALS.citizen.password}</div>
-              <div>Officer: {DEMO_CREDENTIALS.officer.email} / {DEMO_CREDENTIALS.officer.password}</div>
-            </div>
-          </div>
+                <div className="pt-1 border-t border-slate-800 text-[10px] text-slate-400 font-mono space-y-0.5">
+                  <div>Citizen: {DEMO_CREDENTIALS.citizen.email} / {DEMO_CREDENTIALS.citizen.password}</div>
+                  <div>Officer: {DEMO_CREDENTIALS.officer.email} / {DEMO_CREDENTIALS.officer.password}</div>
+                </div>
+              </div>
 
-          <div className="relative flex py-1 items-center">
-            <div className="flex-grow border-t border-slate-800"></div>
-            <span className="flex-shrink mx-4 text-[11px] text-slate-400 uppercase tracking-wider font-mono">
-              or enter credentials
-            </span>
-            <div className="flex-grow border-t border-slate-800"></div>
-          </div>
+              <div className="relative flex py-1 items-center">
+                <div className="flex-grow border-t border-slate-800"></div>
+                <span className="flex-shrink mx-4 text-[11px] text-slate-400 uppercase tracking-wider font-mono">
+                  or enter credentials
+                </span>
+                <div className="flex-grow border-t border-slate-800"></div>
+              </div>
+            </>
+          ) : (
+            <div className="p-3 bg-cyan-950/40 border border-cyan-800/60 rounded-xl text-[11px] text-cyan-200 flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 text-cyan-400 shrink-0" />
+              <span>Live Firebase Authentication active. Instant demo switching is disabled.</span>
+            </div>
+          )}
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-4">

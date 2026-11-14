@@ -36,11 +36,25 @@ interface FloodMapProps {
   showSectorControls?: boolean;
 }
 
-// Controller component to smoothly fly/pan to selected coordinates
+// Controller component to cleanly pan/zoom without leaving dangling unmount animations
 const MapRecenter: React.FC<{ center: [number, number]; zoom?: number }> = ({ center, zoom }) => {
   const map = useMap();
   useEffect(() => {
-    map.setView(center, zoom || map.getZoom(), { animate: true });
+    try {
+      const container = map.getContainer();
+      if (!container || !container.isConnected) return;
+      map.stop();
+      map.setView(center, zoom || map.getZoom(), { animate: false });
+    } catch {
+      // Ignore if map instance is already tearing down
+    }
+    return () => {
+      try {
+        map.stop();
+      } catch {
+        // Ignore teardown errors
+      }
+    };
   }, [center, zoom, map]);
   return null;
 };
@@ -250,11 +264,15 @@ export const FloodMap: React.FC<FloodMapProps> = ({
                   <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 p-2 rounded-lg mb-2.5 font-mono">
                     <div>
                       <span className="text-[10px] text-slate-400 uppercase block font-sans">Reports</span>
-                      <span className="font-bold text-slate-800">{hs.reportCount} Verified</span>
+                      <span className="font-bold text-slate-800">
+                        {hs.reportCount} Unique ({hs.verificationStatus === 'VERIFIED' ? 'Verified' : 'Under Review'})
+                      </span>
                     </div>
                     <div>
                       <span className="text-[10px] text-slate-400 uppercase block font-sans">3h Forecast</span>
-                      <span className="font-bold text-cyan-700">{hs.forecastRainfallMm} mm</span>
+                      <span className="font-bold text-cyan-700">
+                        {hs.rainfallSource === 'MISSING' ? 'Unavailable' : `${hs.forecastRainfallMm} mm`}
+                      </span>
                     </div>
                   </div>
 

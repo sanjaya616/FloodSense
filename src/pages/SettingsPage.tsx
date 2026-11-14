@@ -24,37 +24,56 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 
+type ServiceHealthState =
+  | 'NOT_CONFIGURED'
+  | 'CONNECTED'
+  | 'DISCONNECTED'
+  | 'ERROR'
+  | 'DEMONSTRATION_MODE'
+  | 'NOT_VERIFIED';
+
 interface SystemHealthData {
   timestamp: string;
   status: string;
   services: {
     geminiAi: {
-      status: 'Not Configured' | 'API Key Configured' | 'API Request Successful' | 'API Error' | string;
+      state: ServiceHealthState;
+      status: string;
       configured: boolean;
       mode: string;
       model: string;
+      lastSuccess?: string | null;
+      lastError?: string | null;
       lastChecked?: string;
     };
     weatherApi: {
-      status: 'Open-Meteo Live' | 'Demonstration Fallback' | 'Connection Failed' | string;
+      state: ServiceHealthState;
+      status: string;
       provider: string;
       mode: string;
-      lastSuccessfulConnection?: string;
+      lastSuccessfulConnection?: string | null;
+      lastError?: string | null;
     };
     firebase: {
-      status: 'Not Configured' | 'Configured' | 'Connected' | 'Connection Failed' | string;
+      state: ServiceHealthState;
+      status: string;
       mode: string;
-      rulesConfigured: boolean;
+      adminSdkReady?: boolean;
+      rulesConfigured: boolean | null;
+      rulesNote?: string;
     };
     blockchain: {
-      status: 'Simulated Mode' | 'Network Connected' | 'Contract Not Configured' | 'Transaction Failed' | string;
+      state: ServiceHealthState;
+      status: string;
       network: string;
       chainId: number;
       isSimulated: boolean;
     };
     mapTileService: {
-      status: 'Tile Service Loading' | 'Tile Service Available' | 'Tile Service Unavailable' | string;
+      state: ServiceHealthState;
+      status: string;
       provider: string;
+      lastSuccessfulConnection?: string | null;
       lastChecked?: string;
     };
   };
@@ -221,31 +240,38 @@ export const SettingsPage: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const getStatusBadge = (status: string) => {
-    if (status === 'API Key Configured' || status === 'Open-Meteo Live' || status === 'Tile Service Available' || status === 'Connected') {
+  const getStatusBadge = (label: string, state?: ServiceHealthState) => {
+    if (state === 'CONNECTED') {
       return (
         <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
-          {status}
+          {label}
         </span>
       );
     }
-    if (status === 'Simulated Mode' || status === 'Demonstration Fallback') {
+    if (state === 'DEMONSTRATION_MODE') {
       return (
         <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-cyan-100 text-cyan-800 border border-cyan-200">
-          {status}
+          {label}
         </span>
       );
     }
-    if (status === 'Not Configured' || status === 'Configured') {
+    if (state === 'ERROR' || state === 'DISCONNECTED') {
+      return (
+        <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-200">
+          {label}
+        </span>
+      );
+    }
+    if (state === 'NOT_CONFIGURED' || state === 'NOT_VERIFIED') {
       return (
         <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
-          {status}
+          {label}
         </span>
       );
     }
     return (
       <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
-        {status}
+        {label}
       </span>
     );
   };
@@ -329,98 +355,115 @@ export const SettingsPage: React.FC = () => {
           {/* Gemini AI */}
           <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex flex-col justify-between">
             <div>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-1.5 gap-2">
                 <span className="font-bold text-slate-900">Gemini AI Model</span>
-                {getStatusBadge(systemHealth?.services?.geminiAi?.status || 'API Key Configured')}
+                {getStatusBadge(
+                  systemHealth?.services?.geminiAi?.status || (isProbingHealth ? 'Checking...' : 'Unavailable'),
+                  systemHealth?.services?.geminiAi?.state
+                )}
               </div>
               <p className="text-[11px] text-slate-600">
-                Model: <strong className="font-mono">gemini-3.8-flash</strong> (Server-Side Multimodal Verification)
+                Model: <strong className="font-mono">{systemHealth?.services?.geminiAi?.model || 'gemini-4-hydrogen'}</strong> (Server-Side Multimodal Verification)
               </p>
             </div>
             <span className="text-[10px] text-slate-400 mt-2 font-mono">
-              Mode: {systemHealth?.services?.geminiAi?.mode || 'Live Multimodal AI'}
+              Mode: {systemHealth?.services?.geminiAi?.mode || 'Checking backend...'}
             </span>
           </div>
 
           {/* Weather API */}
           <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex flex-col justify-between">
             <div>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-1.5 gap-2">
                 <span className="font-bold text-slate-900">Weather API</span>
-                {getStatusBadge(systemHealth?.services?.weatherApi?.status || 'Open-Meteo Live')}
+                {getStatusBadge(
+                  systemHealth?.services?.weatherApi?.status || (isProbingHealth ? 'Checking...' : 'Unavailable'),
+                  systemHealth?.services?.weatherApi?.state
+                )}
               </div>
               <p className="text-[11px] text-slate-600">
                 Provider: <strong>Open-Meteo Forecast API</strong> (Asia/Colombo)
               </p>
             </div>
             <span className="text-[10px] text-slate-400 mt-2 font-mono">
-              Last probe: {systemHealth?.timestamp ? new Date(systemHealth.timestamp).toLocaleTimeString() : 'Live'}
+              Last probe: {systemHealth?.timestamp ? new Date(systemHealth.timestamp).toLocaleTimeString() : 'Checking...'}
             </span>
           </div>
 
           {/* Firebase */}
           <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex flex-col justify-between">
             <div>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-1.5 gap-2">
                 <span className="font-bold text-slate-900">Cloud Firestore</span>
-                {getStatusBadge(dataSourceMode === 'FIREBASE' ? 'Connected' : 'Demonstration Mode')}
+                {getStatusBadge(
+                  systemHealth?.services?.firebase?.status || (isProbingHealth ? 'Checking...' : 'Not Checked'),
+                  systemHealth?.services?.firebase?.state
+                )}
               </div>
               <p className="text-[11px] text-slate-600">
-                Status: {dataSourceMode === 'FIREBASE' ? 'Active Cloud Sync' : 'Offline-Safe Demonstration'}
+                Mode: {dataSourceMode === 'FIREBASE' ? 'Active Cloud Mode' : 'Local Demonstration Mode'}
               </p>
             </div>
-            <span className="text-[10px] text-slate-400 mt-2 font-mono">
-              Rules: `firestore.rules` & `storage.rules` configured
+            <span className="text-[10px] text-slate-500 mt-2 font-mono">
+              {systemHealth?.services?.firebase?.rulesNote || 'Checking security rules status...'}
             </span>
           </div>
 
           {/* Blockchain */}
           <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex flex-col justify-between">
             <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="font-bold text-slate-900">Blockchain Network</span>
-                {getStatusBadge('Simulated Mode')}
+              <div className="flex items-center justify-between mb-1.5 gap-2">
+                <span className="font-bold text-slate-900">Audit Hash-Chain</span>
+                {getStatusBadge(
+                  systemHealth?.services?.blockchain?.status || 'Simulated Prototype',
+                  systemHealth?.services?.blockchain?.state || 'DEMONSTRATION_MODE'
+                )}
               </div>
               <p className="text-[11px] text-slate-600">
-                Network: Ethereum Sepolia Testnet (Simulated Demonstrations)
+                {systemHealth?.services?.blockchain?.network || 'Local SHA-256 Hash-Chain Prototype'}
               </p>
             </div>
             <span className="text-[10px] text-slate-400 mt-2 font-mono">
-              Status: Demonstration Mode
+              Status: Local SHA-256 Digest Chain (Simulated)
             </span>
           </div>
 
           {/* Map Tile Service */}
           <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex flex-col justify-between">
             <div>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-1.5 gap-2">
                 <span className="font-bold text-slate-900">GIS Tile Service</span>
-                {getStatusBadge(systemHealth?.services?.mapTileService?.status || 'Tile Service Available')}
+                {getStatusBadge(
+                  systemHealth?.services?.mapTileService?.status || (isProbingHealth ? 'Checking...' : 'Unavailable'),
+                  systemHealth?.services?.mapTileService?.state
+                )}
               </div>
               <p className="text-[11px] text-slate-600">
                 OpenStreetMap Carto Vector Tiles
               </p>
             </div>
-            <span className="text-[10px] text-emerald-600 font-medium mt-2">
-              ● Tile Cache Synchronized
+            <span className="text-[10px] text-slate-500 font-medium mt-2 font-mono">
+              {systemHealth?.services?.mapTileService?.lastChecked
+                ? `Probed at ${new Date(systemHealth.services.mapTileService.lastChecked).toLocaleTimeString()}`
+                : 'Awaiting live tile probe...'}
             </span>
           </div>
 
           {/* Data Freshness */}
           <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex flex-col justify-between">
             <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="font-bold text-slate-900">Data Freshness</span>
-                <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                  REAL-TIME
+              <div className="flex items-center justify-between mb-1.5 gap-2">
+                <span className="font-bold text-slate-900">Health Telemetry</span>
+                <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-800">
+                  {systemHealth ? 'RESPONDED' : isProbingHealth ? 'CHECKING' : 'OFFLINE'}
                 </span>
               </div>
               <p className="text-[11px] text-slate-600 font-mono">
-                Probe: {systemHealth ? new Date(systemHealth.timestamp).toLocaleTimeString() : 'Live'}
+                Probe: {systemHealth ? new Date(systemHealth.timestamp).toLocaleTimeString() : 'Pending'}
               </p>
             </div>
             <span className="text-[10px] text-cyan-700 font-medium mt-2">
-              Auto-poll every 60s
+              On-demand /api/health endpoint
             </span>
           </div>
         </div>
@@ -549,8 +592,8 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 text-[11px] text-slate-500 font-mono">
-            <Lock className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Rules: `firestore.rules` & `storage.rules` configured</span>
+            <Lock className="w-3.5 h-3.5 text-slate-500" />
+            <span>{systemHealth?.services?.firebase?.rulesNote || 'Security rules check pending'}</span>
           </div>
         </div>
       </div>
@@ -567,7 +610,9 @@ export const SettingsPage: React.FC = () => {
               <span>Demonstration Role Switcher</span>
             </h3>
             <p className="text-xs text-slate-500">
-              Toggle between municipal disaster management command and citizen community reporting.
+              {dataSourceMode === 'FIREBASE'
+                ? 'Locked in Cloud Firestore Mode — Officer access is governed strictly by Firebase custom claims.'
+                : 'Toggle between municipal disaster management command and citizen community reporting (Demo Mode only).'}
             </p>
           </div>
           <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-md bg-slate-100 text-slate-800">
@@ -578,58 +623,64 @@ export const SettingsPage: React.FC = () => {
         <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 flex items-start gap-2">
           <Shield className="w-4 h-4 text-cyan-600 shrink-0 mt-0.5" />
           <p>
-            <strong>Security Notice:</strong> The Demonstration Role Switcher controls frontend UI presentation for demonstration walkthroughs.
-            In Firebase Cloud mode, administrative officer rights are governed strictly by trusted server-side custom token claims (`request.auth.token.role == 'officer'`) and cannot be granted by the client.
+            <strong>Security Notice:</strong> Client-side role switching is enabled strictly in Demonstration Mode.
+            In Firebase Cloud mode, administrative officer rights are governed solely by verified custom token claims (<code>request.auth.token.role == &apos;officer&apos;</code>) and client privilege escalation is blocked.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-          <div
-            onClick={() => setRole('officer')}
-            className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
-              role === 'officer'
-                ? 'border-cyan-500 bg-cyan-50/50 shadow-xs'
-                : 'border-slate-200 bg-white hover:border-slate-300'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-sm font-bold text-slate-900">Emergency Officer</span>
-              <input
-                type="radio"
-                name="role"
-                checked={role === 'officer'}
-                onChange={() => setRole('officer')}
-                className="text-cyan-600"
-              />
-            </div>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Full administrative visibility: status transitions, officer dispatch notes, risk prediction rules, and verification.
-            </p>
+        {dataSourceMode === 'FIREBASE' ? (
+          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 font-medium">
+            Role switching is disabled while connected to Cloud Firestore. Sign in with an authorized Officer Firebase account to access Emergency Officer features.
           </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <div
+              onClick={() => setRole('officer')}
+              className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                role === 'officer'
+                  ? 'border-cyan-500 bg-cyan-50/50 shadow-xs'
+                  : 'border-slate-200 bg-white hover:border-slate-300'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-bold text-slate-900">Emergency Officer</span>
+                <input
+                  type="radio"
+                  name="role"
+                  checked={role === 'officer'}
+                  onChange={() => setRole('officer')}
+                  className="text-cyan-600"
+                />
+              </div>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Full administrative visibility: status transitions, officer dispatch notes, risk prediction rules, and verification.
+              </p>
+            </div>
 
-          <div
-            onClick={() => setRole('citizen')}
-            className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
-              role === 'citizen'
-                ? 'border-cyan-500 bg-cyan-50/50 shadow-xs'
-                : 'border-slate-200 bg-white hover:border-slate-300'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-sm font-bold text-slate-900">Citizen Reporter</span>
-              <input
-                type="radio"
-                name="role"
-                checked={role === 'citizen'}
-                onChange={() => setRole('citizen')}
-                className="text-cyan-600"
-              />
+            <div
+              onClick={() => setRole('citizen')}
+              className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                role === 'citizen'
+                  ? 'border-cyan-500 bg-cyan-50/50 shadow-xs'
+                  : 'border-slate-200 bg-white hover:border-slate-300'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-bold text-slate-900">Citizen Reporter</span>
+                <input
+                  type="radio"
+                  name="role"
+                  checked={role === 'citizen'}
+                  onChange={() => setRole('citizen')}
+                  className="text-cyan-600"
+                />
+              </div>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Public user mode: report submissions, own incident status tracking, and public safety advisories.
+              </p>
             </div>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Public user mode: report submissions, own incident status tracking, and public safety advisories.
-            </p>
           </div>
-        </div>
+        )}
       </div>
 
       {/* CLUSTERING & RISK THRESHOLD HEURISTICS */}

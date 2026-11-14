@@ -53,7 +53,7 @@ export const FloodHotspotsPage: React.FC = () => {
 
   const handleOpenOnMap = (hs: FloodHotspot) => {
     setSelectedHotspotId(hs.id);
-    navigate('/map');
+    navigate('/officer/map');
   };
 
   return (
@@ -126,7 +126,7 @@ export const FloodHotspotsPage: React.FC = () => {
 
         <button
           type="button"
-          onClick={() => navigate('/predictions')}
+          onClick={() => navigate('/officer/predictions')}
           className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl transition-all shadow-md shrink-0 flex items-center gap-1.5"
         >
           <span>View Predictive Rules</span>
@@ -193,7 +193,10 @@ export const FloodHotspotsPage: React.FC = () => {
                   Total Observations
                 </span>
                 <span className="text-base font-bold text-slate-900">
-                  {selectedHotspotForModal.reportCount} Reports
+                  {selectedHotspotForModal.reportCount} Unique
+                  {selectedHotspotForModal.duplicateReportCount
+                    ? ` (+${selectedHotspotForModal.duplicateReportCount} dup)`
+                    : ''}
                 </span>
               </div>
               <div>
@@ -209,7 +212,9 @@ export const FloodHotspotsPage: React.FC = () => {
                   3h Rainfall Forecast
                 </span>
                 <span className="text-base font-bold text-cyan-700">
-                  {selectedHotspotForModal.forecastRainfallMm} mm
+                  {selectedHotspotForModal.rainfallSource === 'MISSING'
+                    ? 'Unavailable'
+                    : `${selectedHotspotForModal.forecastRainfallMm} mm`}
                 </span>
               </div>
             </div>

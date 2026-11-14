@@ -22,6 +22,7 @@
       "type": "object",
       "properties": {
         "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "submissionRequestId": { "type": "string" },
         "hotspotId": { "type": "string" },
         "location": { "type": "string", "maxLength": 200 },
         "area": { "type": "string", "maxLength": 80 },
@@ -31,17 +32,19 @@
         "waterLevel": { "type": "string", "enum": ["Low", "Moderate", "High", "Severe"] },
         "roadAccessibility": { "type": "string", "enum": ["Open", "Partially Blocked", "Completely Blocked"] },
         "floodType": { "type": "string", "enum": ["Street Waterlogging", "Flash Flood", "Canal Overflow", "Drainage Blockage"] },
-        "description": { "type": "string", "maxLength": 1000 },
+        "description": { "type": "string", "maxLength": 2000 },
         "imageUrl": { "type": "string" },
+        "reporterId": { "type": "string" },
         "reporterName": { "type": "string", "maxLength": 100 },
         "reporterPhone": { "type": "string", "maxLength": 30 },
         "riskLevel": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
         "verificationStatus": { "type": "string", "enum": ["VERIFIED", "UNDER REVIEW", "REJECTED"] },
-        "aiConfidence": { "type": "number" },
-        "aiClassification": { "type": "string", "maxLength": 150 },
-        "createdBy": { "type": "string" }
+        "incidentStatus": { "type": "string", "enum": ["Submitted", "Under Review", "More Info Requested", "Verified", "Alert Issued", "Resolved", "Rejected"] },
+        "aiStatus": { "type": "string", "enum": ["NOT_RUN", "PENDING", "COMPLETED", "FAILED", "SIMULATED"] },
+        "aiConfidence": { "type": ["number", "null"] },
+        "aiClassification": { "type": "string", "maxLength": 150 }
       },
-      "required": ["id", "location", "area", "lat", "lng", "waterLevel", "roadAccessibility", "floodType", "riskLevel", "verificationStatus"]
+      "required": ["id", "location", "area", "lat", "lng", "waterLevel", "roadAccessibility", "floodType", "riskLevel", "verificationStatus", "reporterId"]
     },
     "FloodHotspot": {
       "title": "FloodHotspot",
@@ -54,11 +57,14 @@
         "lat": { "type": "number" },
         "lng": { "type": "number" },
         "reportCount": { "type": "number" },
+        "totalRecordCount": { "type": "number" },
+        "duplicateReportCount": { "type": "number" },
         "firstReportedTime": { "type": "string" },
         "latestReportedTime": { "type": "string" },
         "riskLevel": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
         "riskScore": { "type": "number" },
         "forecastRainfallMm": { "type": "number" },
+        "rainfallSource": { "type": "string", "enum": ["FORECAST", "AREA_OVERRIDE", "MISSING"] },
         "verificationStatus": { "type": "string", "enum": ["VERIFIED", "UNDER REVIEW"] },
         "precaution": { "type": "string", "maxLength": 500 }
       },
@@ -66,7 +72,7 @@
     },
     "BlockchainRecord": {
       "title": "BlockchainRecord",
-      "description": "Simulated immutable on-chain flood event anchor",
+      "description": "SHA-256 hash-chain audit record anchor",
       "type": "object",
       "properties": {
         "eventId": { "type": "string" },
@@ -75,13 +81,17 @@
         "severity": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
         "timestamp": { "type": "string" },
         "txHash": { "type": "string" },
+        "payloadHash": { "type": "string" },
+        "prevHash": { "type": "string" },
+        "recordHash": { "type": "string" },
+        "canonicalPayload": { "type": "string" },
         "blockNumber": { "type": "number" },
         "network": { "type": "string" },
         "status": { "type": "string" },
         "merkleRoot": { "type": "string" },
         "validatorCount": { "type": "number" }
       },
-      "required": ["eventId", "hotspotId", "location", "severity", "txHash", "blockNumber", "network", "status"]
+      "required": ["eventId", "hotspotId", "location", "severity", "txHash", "payloadHash", "prevHash", "recordHash", "blockNumber", "network", "status"]
     }
   },
   "firestore": {
@@ -95,7 +105,7 @@
     },
     "/public_reports/{reportId}": {
       "schema": { "$ref": "#/entities/FloodReport" },
-      "description": "Sanitized public flood incident summaries without personal phone/email PII"
+      "description": "Sanitized public flood incident summaries without personal PII, written by backend Admin SDK or officers"
     },
     "/officers/{officerId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
@@ -107,11 +117,11 @@
     },
     "/notifications/{notificationId}": {
       "schema": { "type": "object" },
-      "description": "In-app notifications scoped per citizen UID or emergency officer"
+      "description": "In-app notifications scoped per recipientUid"
     },
     "/status_history/{historyId}": {
       "schema": { "type": "object" },
-      "description": "Immutable status transition audit trail linked to flood reports"
+      "description": "Immutable status transition audit trail scoped per citizenUid"
     },
     "/system_settings/{settingId}": {
       "schema": { "type": "object" },

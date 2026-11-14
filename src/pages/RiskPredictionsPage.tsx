@@ -337,13 +337,20 @@ export const RiskPredictionsPage: React.FC = () => {
                       <span className="text-[10px] text-slate-400 uppercase font-sans block">
                         Report Count
                       </span>
-                      <span className="font-bold text-slate-800">{hs.reportCount} reports</span>
+                      <span className="font-bold text-slate-800">
+                        {hs.reportCount} unique
+                        {hs.duplicateReportCount ? ` (+${hs.duplicateReportCount} dup)` : ''}
+                      </span>
                     </div>
                     <div>
                       <span className="text-[10px] text-slate-400 uppercase font-sans block">
                         3h Rainfall
                       </span>
-                      <span className="font-bold text-cyan-700">{hs.forecastRainfallMm} mm</span>
+                      <span className="font-bold text-cyan-700">
+                        {hs.rainfallSource === 'MISSING'
+                          ? 'Unavailable (MISSING)'
+                          : `${hs.forecastRainfallMm} mm`}
+                      </span>
                     </div>
                   </div>
 

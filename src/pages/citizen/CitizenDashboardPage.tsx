@@ -19,6 +19,7 @@ import {
   Activity,
   Bell,
   Flame,
+  ImageOff,
 } from 'lucide-react';
 import { useFlood } from '../../context/FloodContext';
 import { RiskBadge } from '../../components/common/RiskBadge';
@@ -201,11 +202,18 @@ export const CitizenDashboardPage: React.FC = () => {
                   className="p-4 bg-white rounded-2xl border border-slate-200 hover:border-slate-300 transition-all shadow-2xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
                 >
                   <div className="flex items-start gap-3 min-w-0">
-                    <img
-                      src={report.imageUrl || '/images/flood_street_water_1794422510568.jpg'}
-                      alt={report.location}
-                      className="w-14 h-14 rounded-xl object-cover shrink-0 border border-slate-100"
-                    />
+                    {report.imageUrl ? (
+                      <img
+                        src={report.imageUrl}
+                        alt={report.location}
+                        className="w-14 h-14 rounded-xl object-cover shrink-0 border border-slate-100"
+                      />
+                    ) : (
+                      <div className="w-14 h-14 rounded-xl bg-slate-100 border border-slate-200 flex flex-col items-center justify-center text-slate-400 shrink-0">
+                        <ImageOff className="w-4 h-4" />
+                        <span className="text-[8px] font-bold uppercase mt-0.5">No Photo</span>
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
                         <span className="font-mono text-xs font-bold text-slate-700">

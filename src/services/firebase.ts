@@ -4,9 +4,16 @@
  */
 
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
-import { getAuth, Auth, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
+import { getAuth, Auth, GoogleAuthProvider } from 'firebase/auth';
 import { getFirestore, Firestore, doc, getDocFromServer } from 'firebase/firestore';
-import { getStorage, FirebaseStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import {
+  getStorage,
+  FirebaseStorage,
+  ref,
+  uploadBytesResumable,
+  getDownloadURL,
+  deleteObject,
+} from 'firebase/storage';
 import rawFirebaseConfig from '../../firebase-applet-config.json';
 
 export interface FirebaseConfig {
@@ -72,7 +79,6 @@ export async function testFirestoreConnection(): Promise<boolean> {
     await getDocFromServer(doc(db, 'system', 'connection_probe'));
     return true;
   } catch (err: any) {
-    // If permission-denied or not-found, server responded -> connected
     if (err?.code === 'permission-denied' || err?.code === 'not-found') {
       return true;
     }
@@ -80,31 +86,33 @@ export async function testFirestoreConnection(): Promise<boolean> {
   }
 }
 
+export interface StorageUploadResult {
+  downloadUrl: string;
+  storagePath: string | null;
+}
+
 /**
- * Uploads a validated photograph to Firebase Storage
- * Returns public download URL
+ * Uploads a validated photograph to Firebase Storage and returns both URL and path for cleanup.
  */
 export async function uploadPhotographToStorage(
   file: File,
   userId: string,
   onProgress?: (progressPercent: number) => void
-): Promise<string> {
-  // Validate format
+): Promise<StorageUploadResult> {
   const validMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
   if (!validMimes.includes(file.type.toLowerCase())) {
     throw new Error('Unsupported image format. Allowed formats: JPG, JPEG, PNG, WEBP.');
   }
 
-  // Validate size (max 5MB for storage upload)
   const maxBytes = 5 * 1024 * 1024;
   if (file.size > maxBytes) {
     throw new Error('Image file exceeds the 5MB maximum upload limit.');
   }
 
-  // If Firebase Storage is configured, perform actual cloud upload
   if (storage && auth?.currentUser) {
     const safeFileName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-    const storageRef = ref(storage, `reports/${userId}/${safeFileName}`);
+    const storagePath = `reports/${userId}/${safeFileName}`;
+    const storageRef = ref(storage, storagePath);
     const uploadTask = uploadBytesResumable(storageRef, file, {
       contentType: file.type,
     });
@@ -123,7 +131,7 @@ export async function uploadPhotographToStorage(
         async () => {
           try {
             const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-            resolve(downloadUrl);
+            resolve({ downloadUrl, storagePath });
           } catch (err: any) {
             reject(new Error(`Failed to retrieve download URL: ${err.message}`));
           }
@@ -132,6 +140,20 @@ export async function uploadPhotographToStorage(
     });
   }
 
-  // Demonstration mode: Create local object URL for preview and inspection
-  return URL.createObjectURL(file);
+  return {
+    downloadUrl: URL.createObjectURL(file),
+    storagePath: null,
+  };
+}
+
+/**
+ * Cleans up an orphaned Firebase Storage file when a paired Firestore write fails.
+ */
+export async function deleteStoragePath(storagePath: string | null | undefined): Promise<void> {
+  if (!storage || !storagePath) return;
+  try {
+    await deleteObject(ref(storage, storagePath));
+  } catch (err) {
+    console.warn('Orphaned Storage cleanup skipped/failed:', err);
+  }
 }

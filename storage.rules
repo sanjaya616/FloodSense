@@ -7,7 +7,6 @@ service firebase.storage {
       allow read, write: if false;
     }
 
-    // Helper functions
     function isSignedIn() {
       return request.auth != null;
     }
@@ -19,8 +18,13 @@ service firebase.storage {
     function isOfficer() {
       return isSignedIn() && (
         request.auth.token.role == 'officer' ||
-        request.auth.token.officer == true
+        request.auth.token.officer == true ||
+        request.auth.token.role == 'admin'
       );
+    }
+
+    function isValidFileName(fileName) {
+      return fileName.size() > 0 && fileName.size() <= 160 && fileName.matches('^[a-zA-Z0-9._\\-]+$');
     }
 
     function isValidImage() {
@@ -28,21 +32,24 @@ service firebase.storage {
         && request.resource.contentType.matches('image/(jpeg|jpg|png|webp)');
     }
 
-    // Report incident photographs
-    // Stored under reports/{userId}/{fileName}
+    // Private report photographs: readable ONLY by the report owner or authorized officers
     match /reports/{userId}/{fileName} {
-      // Images can be read publicly for flood hazard awareness, or by officers and reporter
-      allow read: if true;
-      
-      // Only the authenticated user can upload to their own user directory, 
-      // with size <= 5MB and valid image MIME type. Cannot overwrite files.
+      allow read: if isOwner(userId) || isOfficer();
+
       allow create: if isOwner(userId)
+        && isValidFileName(fileName)
         && isValidImage();
 
-      // Only the original author or an authorized officer can delete
       allow delete: if isOwner(userId) || isOfficer();
 
-      // Prevent overwrites/updates to immutable evidence
+      allow update: if false;
+    }
+
+    // Optional officer-curated sanitized public thumbnails
+    match /public_reports/{reportId}/{fileName} {
+      allow read: if true;
+      allow create: if isOfficer() && isValidFileName(fileName) && isValidImage();
+      allow delete: if isOfficer();
       allow update: if false;
     }
   }

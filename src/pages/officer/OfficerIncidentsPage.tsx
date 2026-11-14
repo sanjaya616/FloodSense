@@ -22,6 +22,7 @@ import {
   Navigation,
   Phone,
   User,
+  ImageOff,
 } from 'lucide-react';
 import { useFlood } from '../../context/FloodContext';
 import { RiskBadge } from '../../components/common/RiskBadge';
@@ -174,6 +175,8 @@ export const OfficerIncidentsPage: React.FC = () => {
         setInfoRequestPrompt('');
         setShowRejectBox(false);
         setShowInfoRequestBox(false);
+      } else {
+        setActionError('Unable to locate incident record for status update.');
       }
     } catch (err: any) {
       setActionError(err?.message || 'Unable to update incident status.');
@@ -360,6 +363,10 @@ export const OfficerIncidentsPage: React.FC = () => {
                 filteredReports.map((report) => {
                   const hs = findHotspotForReport(report);
                   const isAiFailed = report.aiStatus === 'FAILED';
+                  const isAiNotRun =
+                    report.aiStatus === 'NOT_RUN' ||
+                    (!report.imageUrl && report.aiConfidence == null);
+                  const isAiSimulated = report.aiStatus === 'SIMULATED';
 
                   return (
                     <tr
@@ -368,9 +375,19 @@ export const OfficerIncidentsPage: React.FC = () => {
                       onClick={() => openIncidentModal(report)}
                     >
                       <td className="py-2.5 px-2.5 whitespace-nowrap">
-                        <span className="font-mono font-bold text-slate-900 block leading-tight">
-                          {report.id}
-                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className="font-mono font-bold text-slate-900 leading-tight">
+                            {report.id}
+                          </span>
+                          {report.isDuplicate && (
+                            <span
+                              title={`Duplicate of ${report.duplicateOfReportId || 'prior report'}`}
+                              className="text-[9px] font-mono font-bold px-1 py-0.2 rounded bg-slate-200 text-slate-700"
+                            >
+                              DUP
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[10px] text-slate-400 font-mono">
                           {new Date(report.timestamp).toLocaleString([], {
                             month: 'short',
@@ -405,29 +422,46 @@ export const OfficerIncidentsPage: React.FC = () => {
                       </td>
 
                       <td className="py-2.5 px-2">
-                        <img
-                          src={report.imageUrl || '/images/flood_street_water_1794422510568.jpg'}
-                          alt={report.location}
-                          className="w-9 h-9 rounded-lg object-cover border border-slate-200 shrink-0"
-                        />
+                        {report.imageUrl ? (
+                          <img
+                            src={report.imageUrl}
+                            alt={report.location}
+                            className="w-9 h-9 rounded-lg object-cover border border-slate-200 shrink-0"
+                          />
+                        ) : (
+                          <div
+                            title="No photograph attached"
+                            className="w-9 h-9 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 shrink-0"
+                          >
+                            <ImageOff className="w-3.5 h-3.5" />
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-2.5 px-2.5 max-w-[135px]">
                         <span
                           className={`text-[11px] font-semibold block truncate ${
-                            isAiFailed ? 'text-red-700' : 'text-slate-700'
+                            isAiFailed ? 'text-red-700' : isAiNotRun ? 'text-slate-500' : 'text-slate-700'
                           }`}
                         >
-                          {report.aiClassification || 'Under Evaluation'}
+                          {report.aiClassification || (isAiNotRun ? 'AI Not Run (No Image)' : 'Under Evaluation')}
                         </span>
                         <div className="flex items-center gap-1 mt-0.5">
                           {isAiFailed ? (
                             <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-800">
                               AI FAILED
                             </span>
+                          ) : isAiNotRun ? (
+                            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                              NOT RUN
+                            </span>
+                          ) : isAiSimulated ? (
+                            <span className="text-[10px] font-mono font-bold text-amber-700">
+                              {report.aiConfidence != null ? `${report.aiConfidence}% (Sim)` : 'Sim'}
+                            </span>
                           ) : (
                             <span className="text-[10px] font-mono font-bold text-cyan-800">
-                              {report.aiConfidence ?? 0}%
+                              {report.aiConfidence != null ? `${report.aiConfidence}%` : 'N/A'}
                             </span>
                           )}
                           <span className="text-[10px] text-slate-400 truncate">· {report.waterLevel}</span>
@@ -502,6 +536,11 @@ export const OfficerIncidentsPage: React.FC = () => {
                   >
                     Status: {selectedIncident.incidentStatus}
                   </span>
+                  {selectedIncident.isDuplicate && (
+                    <span className="text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full bg-slate-200 text-slate-800">
+                      Duplicate of {selectedIncident.duplicateOfReportId || 'prior report'}
+                    </span>
+                  )}
                 </div>
                 <h2 className="text-xl font-bold text-slate-900">{selectedIncident.location}</h2>
                 <p className="text-xs text-slate-500">
@@ -536,16 +575,26 @@ export const OfficerIncidentsPage: React.FC = () => {
               {/* Left Column: Photo, Mini GPS Map, Citizen Description & Reporter Info */}
               <div className="lg:col-span-6 space-y-4">
                 <div>
-                  <img
-                    src={
-                      selectedIncident.imageUrl || '/images/flood_street_water_1794422510568.jpg'
-                    }
-                    alt={selectedIncident.location}
-                    className="w-full h-52 rounded-2xl object-cover border border-slate-200 shadow-2xs"
-                  />
-                  <span className="text-[10px] text-slate-400 font-mono mt-1 block">
-                    Submitted Citizen Photographic Evidence
-                  </span>
+                  {selectedIncident.imageUrl ? (
+                    <>
+                      <img
+                        src={selectedIncident.imageUrl}
+                        alt={selectedIncident.location}
+                        className="w-full h-52 rounded-2xl object-cover border border-slate-200 shadow-2xs"
+                      />
+                      <span className="text-[10px] text-slate-400 font-mono mt-1 block">
+                        Submitted Citizen Photographic Evidence
+                      </span>
+                    </>
+                  ) : (
+                    <div className="w-full h-36 rounded-2xl border border-dashed border-slate-300 bg-slate-50 flex flex-col items-center justify-center text-slate-500 gap-1.5">
+                      <ImageOff className="w-6 h-6 text-slate-400" />
+                      <span className="text-xs font-bold text-slate-700">No Photograph Attached</span>
+                      <span className="text-[11px] text-slate-500">
+                        Text-only incident submission (AI visual review not run)
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Mini Leaflet Map Focused on Incident Pin */}
@@ -639,15 +688,31 @@ export const OfficerIncidentsPage: React.FC = () => {
                       <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">
                         AI Processing Failed
                       </span>
+                    ) : selectedIncident.aiStatus === 'NOT_RUN' ||
+                      (!selectedIncident.imageUrl && selectedIncident.aiConfidence == null) ? (
+                      <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-slate-700 text-slate-300">
+                        AI NOT RUN (NO IMAGE)
+                      </span>
+                    ) : selectedIncident.aiStatus === 'SIMULATED' ? (
+                      <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">
+                        {selectedIncident.aiConfidence != null
+                          ? `${selectedIncident.aiConfidence}% (Simulated)`
+                          : 'Simulated'}
+                      </span>
                     ) : (
                       <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300">
-                        {selectedIncident.aiConfidence ?? 0}% Confidence
+                        {selectedIncident.aiConfidence != null
+                          ? `${selectedIncident.aiConfidence}% Confidence`
+                          : 'Confidence N/A'}
                       </span>
                     )}
                   </div>
 
                   <p className="text-xs font-bold text-white">
-                    {selectedIncident.aiClassification || 'Pending AI Review'}
+                    {selectedIncident.aiClassification ||
+                      (selectedIncident.aiStatus === 'NOT_RUN'
+                        ? 'AI Not Run (No Image)'
+                        : 'Pending AI Review')}
                   </p>
                   <p className="text-[11px] text-slate-300 leading-relaxed">
                     {selectedIncident.aiVerificationDetails?.explanation ||

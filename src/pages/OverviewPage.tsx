@@ -43,13 +43,13 @@ import {
   CartesianGrid,
   Tooltip,
 } from 'recharts';
-import { SYSTEM_ACTIVITY_EVENTS } from '../data/demonstrationData';
 import { NavLink } from 'react-router-dom';
 
 export const OverviewPage: React.FC = () => {
   const {
     reports,
     hotspots,
+    blockchainRecords,
     setSelectedReportId,
     setSelectedHotspotId,
     weather,
@@ -66,11 +66,20 @@ export const OverviewPage: React.FC = () => {
   const [isRefreshingWeather, setIsRefreshingWeather] = useState(false);
 
   // Compute dynamic analytics from active dataset
-  const analytics24h = getAnalytics('24h');
+  const analytics24h = getAnalytics('all');
   const totalReportsToday = reports.length;
   const activeHotspotsCount = hotspots.length;
-  const highRiskHotspotsCount = hotspots.filter((h) => h.riskLevel === 'HIGH').length;
-  const avgAlertMinutes = `${analytics24h.avgProcessingMinutes} min`;
+  const highRiskHotspots = hotspots.filter((h) => h.riskLevel === 'HIGH');
+  const highRiskHotspotsCount = highRiskHotspots.length;
+  const highRiskAreaSummary =
+    highRiskHotspots.length > 0
+      ? Array.from(new Set(highRiskHotspots.map((h) => h.area)))
+          .slice(0, 3)
+          .join(', ')
+      : 'None active';
+
+  const avgReviewDisplay =
+    analytics24h.avgReviewMinutes !== null ? `${analytics24h.avgReviewMinutes} min` : 'No verified timing';
 
   // Filtered reports for live feed
   const filteredReports = reports.filter((r) => {
@@ -83,14 +92,27 @@ export const OverviewPage: React.FC = () => {
     return matchesRisk && matchesSearch;
   });
 
-  // Calculate dynamic hourly report volume buckets from reports
-  const hourlyData = [
-    { time: '04:00', reports: Math.max(1, Math.round(reports.length * 0.05)), rainfallMm: 4.2 },
-    { time: '06:00', reports: Math.max(2, Math.round(reports.length * 0.15)), rainfallMm: 14.5 },
-    { time: '08:00', reports: Math.max(4, Math.round(reports.length * 0.35)), rainfallMm: 28.0 },
-    { time: '10:00', reports: Math.max(3, Math.round(reports.length * 0.25)), rainfallMm: weather.currentRainfallMm },
-    { time: 'Now', reports: reports.length, rainfallMm: weather.expected3hRainfallMm },
-  ];
+  // Real time-bucketed volume from active reports (never synthetic multipliers)
+  const volumeChartData = analytics24h.reportVolumeOverTime.map((pt) => ({
+    time: pt.label,
+    reports: pt.total,
+  }));
+
+  // Live activity derived from current reports & blockchain audit records
+  const dynamicActivityEvents = [
+    ...reports.slice(0, 2).map((rep) => ({
+      id: `act-rep-${rep.id}`,
+      title: `Report ${rep.id} (${rep.incidentStatus})`,
+      time: new Date(rep.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      description: `${rep.location} (${rep.area}) · ${rep.waterLevel} depth`,
+    })),
+    ...blockchainRecords.slice(0, 2).map((blk) => ({
+      id: `act-blk-${blk.eventId}`,
+      title: `Audit Block #${blk.blockNumber} (${blk.severity})`,
+      time: new Date(blk.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      description: `SHA-256 anchored ${blk.hotspotId} (${blk.location})`,
+    })),
+  ].slice(0, 4);
 
   const handleManualWeatherRefresh = async () => {
     setIsRefreshingWeather(true);
@@ -201,15 +223,21 @@ export const OverviewPage: React.FC = () => {
           subtitle="Critical road blockage risk"
           icon={AlertTriangle}
           colorScheme="danger"
-          trend={{ value: 'Maradana, Kolonnawa', isPositive: false }}
+          trend={{ value: highRiskAreaSummary, isPositive: false }}
         />
         <StatCard
-          title="Average Alert Generation"
-          value={avgAlertMinutes}
-          subtitle="From 1st report to dispatch"
+          title="Avg Officer Review Time"
+          value={avgReviewDisplay}
+          subtitle="Submission to verification"
           icon={Clock}
           colorScheme="success"
-          trend={{ value: 'Real-time telemetry metric', isPositive: true }}
+          trend={{
+            value:
+              analytics24h.avgReviewMinutes !== null
+                ? `${analytics24h.verifiedCount} verified reports`
+                : 'Awaiting timestamps',
+            isPositive: true,
+          }}
         />
       </div>
 
@@ -227,7 +255,7 @@ export const OverviewPage: React.FC = () => {
               </p>
             </div>
             <NavLink
-              to="/map"
+              to="/officer/map"
               className="text-xs font-semibold text-cyan-700 hover:text-cyan-800 flex items-center gap-1 group shrink-0"
             >
               <span>Full Screen Operations Map</span>
@@ -296,7 +324,7 @@ export const OverviewPage: React.FC = () => {
               Source: {dataSourceMode === 'FIREBASE' ? 'Cloud Firestore' : 'Local Demonstration Data'}
             </span>
             <NavLink
-              to="/report"
+              to="/officer/report"
               className="text-cyan-700 hover:text-cyan-800 font-semibold flex items-center gap-1"
             >
               <span>+ Dispatch New Flood Report</span>
@@ -307,24 +335,24 @@ export const OverviewPage: React.FC = () => {
 
       {/* Bottom Section: Analytics charts & Recent Activity */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {/* Chart 1: Reports Over Time (Dynamic) */}
+        {/* Chart 1: Reports Over Time (Bucketed directly from report timestamps) */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h4 className="text-sm font-bold text-slate-900">Flood Reports Over Time</h4>
-              <p className="text-xs text-slate-500">Active surge progression (Reports vs Rain mm)</p>
+              <p className="text-xs text-slate-500">Bucketed directly from incident timestamps</p>
             </div>
             <span className="text-[10px] font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-bold">
-              Dynamic
+              Timestamped
             </span>
           </div>
 
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={hourlyData}>
+              <LineChart data={volumeChartData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
                 <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#64748B' }} />
-                <YAxis tick={{ fontSize: 10, fill: '#64748B' }} />
+                <YAxis tick={{ fontSize: 10, fill: '#64748B' }} allowDecimals={false} />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: '#1E293B',
@@ -340,15 +368,6 @@ export const OverviewPage: React.FC = () => {
                   strokeWidth={2.5}
                   dot={{ r: 3, fill: '#06B6D4' }}
                   name="Reports"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="rainfallMm"
-                  stroke="#6366F1"
-                  strokeWidth={2}
-                  strokeDasharray="4 4"
-                  dot={false}
-                  name="Rainfall (mm)"
                 />
               </LineChart>
             </ResponsiveContainer>
@@ -414,31 +433,35 @@ export const OverviewPage: React.FC = () => {
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h4 className="text-sm font-bold text-slate-900">Recent System Activity</h4>
-                <p className="text-xs text-slate-500">Automated AI & blockchain audit stream</p>
+                <p className="text-xs text-slate-500">Live incident &amp; SHA-256 audit feed</p>
               </div>
               <Activity className="w-4 h-4 text-cyan-600" />
             </div>
 
             <div className="space-y-3">
-              {SYSTEM_ACTIVITY_EVENTS.slice(0, 4).map((evt) => (
-                <div key={evt.id} className="text-xs border-l-2 border-cyan-500 pl-3 py-0.5">
-                  <div className="flex items-center justify-between gap-1 mb-0.5">
-                    <span className="font-bold text-slate-900 truncate">{evt.title}</span>
-                    <span className="text-[10px] text-slate-400 font-mono shrink-0">{evt.time}</span>
+              {dynamicActivityEvents.length === 0 ? (
+                <p className="text-xs text-slate-400 py-4 text-center">No recent operational events.</p>
+              ) : (
+                dynamicActivityEvents.map((evt) => (
+                  <div key={evt.id} className="text-xs border-l-2 border-cyan-500 pl-3 py-0.5">
+                    <div className="flex items-center justify-between gap-1 mb-0.5">
+                      <span className="font-bold text-slate-900 truncate">{evt.title}</span>
+                      <span className="text-[10px] text-slate-400 font-mono shrink-0">{evt.time}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 line-clamp-1">{evt.description}</p>
                   </div>
-                  <p className="text-[11px] text-slate-500 line-clamp-1">{evt.description}</p>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
 
           <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
             <span className="text-slate-400 font-mono text-[11px]">Audit Engine Active</span>
             <NavLink
-              to="/blockchain"
+              to="/officer/blockchain"
               className="font-semibold text-cyan-700 hover:text-cyan-800 flex items-center gap-1"
             >
-              <span>View On-Chain Registry →</span>
+              <span>View Audit Ledger →</span>
             </NavLink>
           </div>
         </div>

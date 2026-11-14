@@ -16,6 +16,10 @@ import {
   clusterReports,
   calculateDynamicAnalytics,
   generateReportId,
+  computeBlockchainHashChain,
+  verifyBlockchainRecordIntegrity,
+  sha256Hex,
+  GENESIS_PREV_HASH,
   DEFAULT_RISK_THRESHOLDS,
   DEFAULT_CLUSTERING_CONFIG,
   FloodReport,
@@ -335,7 +339,8 @@ test('generateSimulatedBlockchainRecord generates valid hex format and explicit 
   assert.ok(rec.merkleRoot.startsWith('0x'));
   assert.equal(rec.merkleRoot.length, 66);
   assert.ok(rec.payloadHash.startsWith('0x'));
-  assert.ok(rec.auditExplanation.includes('Demonstration Smart Contract'));
+  assert.ok(rec.recordHash.startsWith('0x'));
+  assert.ok(rec.auditExplanation.includes('Prototype SHA-256 Hash-Chain Record'));
 });
 
 // 14. Dynamic Analytics Calculation Function
@@ -496,7 +501,7 @@ test('More Info Requested status is tracked distinctly and never counted as veri
       incidentStatus: 'More Info Requested',
       aiStatus: 'FAILED',
       aiClassification: 'AI Processing Failed',
-      aiConfidence: 0,
+      aiConfidence: null,
       statusHistory: [],
     },
   ];
@@ -506,5 +511,155 @@ test('More Info Requested status is tracked distinctly and never counted as veri
   assert.equal(analytics.statusCounts['More Info Requested'], 1);
   assert.equal(analytics.verifiedCount, 0);
   assert.equal(analytics.verifiedPercentage, 0);
+  assert.equal(analytics.avgReviewMinutes, null);
 });
+
+// 18. BFS Connected-Component Transitivity & Invalid Record Filtering
+test('clusterReports performs BFS connected-component clustering and filters invalid coordinates/timestamps', () => {
+  const baseTime = '2026-11-12T10:00:00.000Z';
+  const makeRep = (id: string, lat: number, lng: number, ts = baseTime): FloodReport => ({
+    id,
+    location: `Point ${id}`,
+    area: 'Maradana',
+    lat,
+    lng,
+    timestamp: ts,
+    waterLevel: 'High',
+    roadAccessibility: 'Partially Blocked',
+    floodType: 'Street Waterlogging',
+    description: 'Cluster transitivity test',
+    riskLevel: 'HIGH',
+    verificationStatus: 'UNDER REVIEW',
+    incidentStatus: 'Submitted',
+    statusHistory: [],
+  });
+
+  // A at (6.9200, 79.8600), B ~350m north (6.92315), C ~350m north of B (6.92630)
+  // A->C is ~700m (> 500m), but A-B <= 500m and B-C <= 500m => single connected component
+  const repA = makeRep('REP-A', 6.9200, 79.8600);
+  const repB = makeRep('REP-B', 6.92315, 79.8600);
+  const repC = makeRep('REP-C', 6.92630, 79.8600);
+  const invalidCoords = makeRep('REP-BAD-GEO', 99.0, 79.8600);
+  const invalidTs = makeRep('REP-BAD-TS', 6.9200, 79.8600, 'not-a-timestamp');
+
+  const dAC = calculateHaversineDistance(repA.lat, repA.lng, repC.lat, repC.lng);
+  assert.ok(dAC > 500, `Expected A->C > 500m, got ${dAC}`);
+
+  const clusters1 = clusterReports([repA, repB, repC, invalidCoords, invalidTs]);
+  assert.equal(clusters1.length, 1);
+  assert.equal(clusters1[0].reportCount, 3);
+  assert.equal(clusters1[0].rainfallSource, 'MISSING');
+  assert.equal(clusters1[0].forecastRainfallMm, 0);
+
+  // Deterministic ID invariant under input permutation
+  const clusters2 = clusterReports([repC, repA, repB]);
+  assert.equal(clusters2.length, 1);
+  assert.equal(clusters1[0].id, clusters2[0].id);
+});
+
+// 19. Pure-TS SHA-256 Hash-Chain & Tamper Detection
+test('computeBlockchainHashChain and verifyBlockchainRecordIntegrity detect payload tampering and broken links', () => {
+  assert.equal(
+    sha256Hex('abc'),
+    'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+  );
+
+  const rec1 = generateSimulatedBlockchainRecord('HS-001', 'Maradana Junction', 'HIGH', {
+    blockNumber: 1,
+    prevHash: GENESIS_PREV_HASH,
+    eventId: 'EVT-TEST-01',
+    timestamp: '2026-11-12T08:00:00.000Z',
+  });
+  const rec2 = generateSimulatedBlockchainRecord('HS-002', 'Kolonnawa Canal', 'MEDIUM', {
+    blockNumber: 2,
+    prevHash: rec1.recordHash,
+    eventId: 'EVT-TEST-02',
+    timestamp: '2026-11-12T09:00:00.000Z',
+  });
+
+  const v1 = verifyBlockchainRecordIntegrity(rec1, GENESIS_PREV_HASH);
+  const v2 = verifyBlockchainRecordIntegrity(rec2, rec1.recordHash);
+  assert.equal(v1.valid, true);
+  assert.equal(v2.valid, true);
+
+  // Tamper location on rec2 without re-hashing
+  const tamperedPayload = { ...rec2, location: 'Tampered Sector' };
+  const tv1 = verifyBlockchainRecordIntegrity(tamperedPayload, rec1.recordHash);
+  assert.equal(tv1.valid, false);
+  assert.equal(tv1.payloadValid, false);
+
+  // Break previous hash link
+  const brokenLink = { ...rec2, prevHash: '0x' + 'f'.repeat(64) };
+  const tv2 = verifyBlockchainRecordIntegrity(brokenLink, rec1.recordHash);
+  assert.equal(tv2.valid, false);
+  assert.equal(tv2.prevHashMatches, false);
+});
+
+// 20. simulateAiVerification NOT_RUN when hasImage is false
+test('simulateAiVerification marks NOT_RUN with null confidence when no photo is provided', () => {
+  const result = simulateAiVerification({
+    waterLevel: 'Moderate',
+    floodType: 'Street Waterlogging',
+    hasImage: false,
+    description: 'Text-only citizen submission',
+  });
+  assert.equal(result.aiStatus, 'NOT_RUN');
+  assert.equal(result.confidence, null);
+  assert.equal(result.officialStatus, 'Under Review');
+});
+
+// 21. Dynamic Analytics Review Duration, Bucketing & Completeness
+test('calculateDynamicAnalytics computes real verification duration and data completeness', () => {
+  const t0 = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const t1 = new Date(Date.now() - 40 * 60 * 1000).toISOString(); // 20 mins later
+  const reports: FloodReport[] = [
+    {
+      id: 'R-COMP-1',
+      location: 'Borella Cross',
+      area: 'Borella',
+      lat: 6.9147,
+      lng: 79.8770,
+      timestamp: t0,
+      verificationTimestamp: t1,
+      waterLevel: 'High',
+      roadAccessibility: 'Partially Blocked',
+      floodType: 'Drainage Blockage',
+      description: 'Valid verified report',
+      imageUrl: 'data:image/jpeg;base64,abc',
+      riskLevel: 'HIGH',
+      verificationStatus: 'VERIFIED',
+      incidentStatus: 'Verified',
+      statusHistory: [],
+    },
+    {
+      id: 'R-COMP-2',
+      location: 'Borella Cross',
+      area: 'Borella',
+      lat: 6.91471,
+      lng: 79.87701,
+      timestamp: t0,
+      waterLevel: 'High',
+      roadAccessibility: 'Partially Blocked',
+      floodType: 'Drainage Blockage',
+      description: 'Duplicate entry',
+      riskLevel: 'HIGH',
+      verificationStatus: 'UNDER REVIEW',
+      incidentStatus: 'Submitted',
+      isDuplicate: true,
+      duplicateOfReportId: 'R-COMP-1',
+      statusHistory: [],
+    },
+  ];
+
+  const hotspots = clusterReports(reports, DEFAULT_CLUSTERING_CONFIG, { __default: 24 });
+  const analytics = calculateDynamicAnalytics(reports, hotspots, '24h');
+  assert.equal(analytics.avgReviewMinutes, 20);
+  assert.equal(analytics.uniqueReportCount, 1);
+  assert.equal(analytics.duplicateReportCount, 1);
+  assert.equal(analytics.dataCompleteness.reportsWithImages, 1);
+  assert.equal(analytics.dataCompleteness.hotspotsWithForecastRainfall, 1);
+  assert.equal(analytics.hasRainfallCorrelationData, true);
+  assert.ok(analytics.reportVolumeOverTime.length >= 1);
+});
+
 

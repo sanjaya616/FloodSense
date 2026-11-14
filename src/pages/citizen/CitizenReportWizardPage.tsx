@@ -24,6 +24,10 @@ import {
 import { useFlood } from '../../context/FloodContext';
 import { FLOOD_IMAGES } from '../../assets/images';
 import { validateCoordinates, AiStatus } from '../../utils/floodLogic';
+import {
+  validateAndSanitizeImageFile,
+  createSubmissionRequestId,
+} from '../../utils/imageUtils';
 import { FloodMap } from '../../components/map/FloodMap';
 
 export const CitizenReportWizardPage: React.FC = () => {
@@ -38,14 +42,17 @@ export const CitizenReportWizardPage: React.FC = () => {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [imageMimeType, setImageMimeType] = useState<string>('image/jpeg');
+  const [imageMetaInfo, setImageMetaInfo] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isProcessingImage, setIsProcessingImage] = useState(false);
 
-  // Step 2: Location & Coordinates
+  // Step 2: Location & Coordinates (No silent Maradana/coordinate prefills)
   const [locationName, setLocationName] = useState('');
-  const [area, setArea] = useState<string>('Maradana');
-  const [latInput, setLatInput] = useState<string>('6.92710');
-  const [lngInput, setLngInput] = useState<string>('79.86530');
+  const [area, setArea] = useState<string>('');
+  const [latInput, setLatInput] = useState<string>('');
+  const [lngInput, setLngInput] = useState<string>('');
+  const [pinConfirmed, setPinConfirmed] = useState<boolean>(false);
   const [isLocating, setIsLocating] = useState(false);
   const [gpsSuccess, setGpsSuccess] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
@@ -57,9 +64,9 @@ export const CitizenReportWizardPage: React.FC = () => {
   const [description, setDescription] = useState('');
   const [additionalObservations, setAdditionalObservations] = useState('');
 
-  // Step 4: Contact & Submission Options
-  const [reporterPhone, setReporterPhone] = useState(userProfile.phone || '+94 77 123 4567');
-  const [simulateAiFailure, setSimulateAiFailure] = useState(false);
+  // Step 4: Contact & Idempotency key
+  const [reporterPhone, setReporterPhone] = useState(userProfile.phone || '');
+  const [submissionRequestId, setSubmissionRequestId] = useState<string>(() => createSubmissionRequestId());
 
   // Step 5: Submission, Upload Progress & AI Result
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -70,7 +77,7 @@ export const CitizenReportWizardPage: React.FC = () => {
     reportId: string;
     hotspotId: string;
     aiStatus: AiStatus;
-    aiConfidence: number;
+    aiConfidence: number | null;
     aiClassification: string;
     aiExplanation: string;
     status: string;
@@ -80,7 +87,7 @@ export const CitizenReportWizardPage: React.FC = () => {
 
   const parsedLat = Number.parseFloat(latInput);
   const parsedLng = Number.parseFloat(lngInput);
-  const coordsAreValid = validateCoordinates(parsedLat, parsedLng);
+  const coordsAreValid = latInput.trim() !== '' && lngInput.trim() !== '' && validateCoordinates(parsedLat, parsedLng);
 
   const areaCoordinates: Record<string, { lat: number; lng: number }> = {
     Maradana: { lat: 6.9271, lng: 79.8653 },
@@ -95,36 +102,46 @@ export const CitizenReportWizardPage: React.FC = () => {
 
   const handleAreaChange = (newArea: string) => {
     setArea(newArea);
+    setPinConfirmed(false);
+    setGpsSuccess(false);
     if (areaCoordinates[newArea]) {
       setLatInput(areaCoordinates[newArea].lat.toFixed(5));
       setLngInput(areaCoordinates[newArea].lng.toFixed(5));
       setLocationError(null);
+    } else {
+      setLatInput('');
+      setLngInput('');
     }
   };
 
-  const handleFileSelect = (file: File) => {
+  const handleClearImage = () => {
+    setImagePreview(null);
+    setImageBase64(null);
+    setSelectedFile(null);
+    setImageMetaInfo(null);
     setImageError(null);
-    const validMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
-    if (!validMimes.includes(file.type.toLowerCase())) {
-      setImageError('Invalid image format. Please upload JPG, PNG, or WEBP photos.');
-      return;
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
-    const maxBytes = 5 * 1024 * 1024;
-    if (file.size > maxBytes) {
-      setImageError('File size exceeds the 5MB upload limit.');
-      return;
+  };
+
+  const handleFileSelect = async (file: File) => {
+    setImageError(null);
+    setIsProcessingImage(true);
+    try {
+      const sanitized = await validateAndSanitizeImageFile(file);
+      setSelectedFile(sanitized.file);
+      setImageMimeType(sanitized.mimeType);
+      setImagePreview(sanitized.dataUrl);
+      setImageBase64(sanitized.dataUrl);
+      setImageMetaInfo(
+        `${sanitized.sizeLabel} · ${sanitized.exifStripped ? 'EXIF metadata stripped' : 'Verified header'}`
+      );
+    } catch (err: any) {
+      setImageError(err?.message || 'Unable to process selected image file.');
+    } finally {
+      setIsProcessingImage(false);
     }
-
-    setSelectedFile(file);
-    setImageMimeType(file.type.toLowerCase());
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      setImagePreview(dataUrl);
-      setImageBase64(dataUrl);
-    };
-    reader.readAsDataURL(file);
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -136,20 +153,31 @@ export const CitizenReportWizardPage: React.FC = () => {
     }
   };
 
-  const handleUseDemoSample = (url: string) => {
-    setImagePreview(url);
-    setImageBase64(url);
+  const handleUseDemoSample = async (url: string) => {
     setImageError(null);
+    setImagePreview(url);
     setSelectedFile(null);
+    setImageMetaInfo('Demonstration sample preset');
+    try {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      setImageMimeType(blob.type || 'image/jpeg');
+      const reader = new FileReader();
+      reader.onload = () => setImageBase64(String(reader.result || ''));
+      reader.readAsDataURL(blob);
+    } catch {
+      setImageBase64(url);
+    }
   };
 
   const handleGetGps = () => {
     setIsLocating(true);
     setLocationError(null);
     setGpsSuccess(false);
+    setPinConfirmed(false);
 
     if (!navigator.geolocation) {
-      setLocationError('Geolocation is not supported by your browser. You can enter coordinates manually below.');
+      setLocationError('Geolocation is not supported by your browser. Please select a sector or enter coordinates manually.');
       setIsLocating(false);
       return;
     }
@@ -162,7 +190,7 @@ export const CitizenReportWizardPage: React.FC = () => {
         setIsLocating(false);
       },
       () => {
-        setLocationError('Could not acquire browser GPS position. Preset Colombo coordinates retained; you may edit manually.');
+        setLocationError('Could not acquire browser GPS position. Please select a sector or enter latitude & longitude manually.');
         setIsLocating(false);
       },
       { enableHighAccuracy: true, timeout: 8000 }
@@ -170,17 +198,25 @@ export const CitizenReportWizardPage: React.FC = () => {
   };
 
   const handleContinueFromStep2 = () => {
+    if (!area.trim()) {
+      setLocationError('Please select a Colombo Municipal Area / Ward before continuing.');
+      return;
+    }
     if (!coordsAreValid) {
-      setLocationError('Please enter valid latitude (-90 to 90) and longitude (-180 to 180) coordinates.');
+      setLocationError('Please acquire GPS or enter valid latitude (-90 to 90) and longitude (-180 to 180) coordinates.');
+      return;
+    }
+    if (!pinConfirmed) {
+      setLocationError('Please confirm that the pin shown on the preview map represents the flooded road location.');
       return;
     }
     setLocationError(null);
     setCurrentStep(3);
   };
 
-  const handleFinalSubmit = async () => {
-    if (!coordsAreValid) {
-      setSubmitError('Invalid coordinates detected. Please return to Step 2.');
+  const handleFinalSubmit = async (omitPhoto = false) => {
+    if (!coordsAreValid || !area.trim()) {
+      setSubmitError('Invalid coordinates or missing area detected. Please return to Step 2.');
       return;
     }
     setSubmitError(null);
@@ -189,7 +225,7 @@ export const CitizenReportWizardPage: React.FC = () => {
     setCurrentStep(5);
 
     try {
-      const finalLocation = locationName.trim() || `${area} Main Road`;
+      const finalLocation = locationName.trim() || `${area} Road Incident`;
       const result = await addReport({
         location: finalLocation,
         area: area as any,
@@ -201,13 +237,13 @@ export const CitizenReportWizardPage: React.FC = () => {
         description: description.trim() || 'Reported via citizen 5-step reporting wizard.',
         additionalObservations: additionalObservations.trim() || undefined,
         reporterName: userProfile.name,
-        reporterPhone: reporterPhone,
-        reporterId: userProfile.email || 'citizen_demo_user',
-        imageUrl: imagePreview || undefined,
-        imageFile: selectedFile || undefined,
-        customImage: imageBase64 || undefined,
-        imageMimeType,
-        simulateAiFailure,
+        reporterPhone: reporterPhone.trim(),
+        reporterId: userProfile.uid || userProfile.email || 'citizen_demo_user',
+        imageUrl: !omitPhoto && imagePreview ? imagePreview : undefined,
+        imageFile: !omitPhoto && selectedFile ? selectedFile : undefined,
+        customImage: !omitPhoto && imageBase64 ? imageBase64 : undefined,
+        imageMimeType: !omitPhoto ? imageMimeType : undefined,
+        submissionRequestId,
         onUploadProgress: (pct) => setUploadProgress(Math.max(pct, 25)),
       });
 
@@ -215,12 +251,12 @@ export const CitizenReportWizardPage: React.FC = () => {
       setSubmissionResult({
         reportId: result.report.id,
         hotspotId: result.hotspot.id,
-        aiStatus: result.report.aiStatus || 'COMPLETED',
-        aiConfidence: result.report.aiConfidence || 0,
+        aiStatus: result.report.aiStatus || (omitPhoto || !imageBase64 ? 'NOT_RUN' : 'COMPLETED'),
+        aiConfidence: result.report.aiConfidence ?? null,
         aiClassification: result.report.aiClassification || 'Under Review',
         aiExplanation:
           result.report.aiVerificationDetails?.explanation ||
-          'Multimodal vision analysis completed. Incident queued for emergency officer field verification.',
+          'Submission saved. Incident queued for emergency officer field verification.',
         status: result.report.incidentStatus,
         isDuplicate: result.isDuplicate,
         duplicateOfId: result.duplicateOfId,
@@ -239,17 +275,16 @@ export const CitizenReportWizardPage: React.FC = () => {
       const updated = await retryAiVerification(submissionResult.reportId, {
         customImage: imageBase64 || undefined,
         mimeType: imageMimeType,
-        simulateFailure: false,
       });
       if (updated) {
         setSubmissionResult({
           ...submissionResult,
-          aiStatus: updated.aiStatus || 'COMPLETED',
-          aiConfidence: updated.aiConfidence || 0,
-          aiClassification: updated.aiClassification || 'Uncertain Image',
+          aiStatus: updated.aiStatus || 'FAILED',
+          aiConfidence: updated.aiConfidence ?? null,
+          aiClassification: updated.aiClassification || 'AI Processing Failed',
           aiExplanation:
             updated.aiVerificationDetails?.explanation ||
-            'AI retry completed. Queued for officer inspection.',
+            'AI retry finished. Queued for officer inspection.',
           status: updated.incidentStatus,
         });
       }
@@ -404,22 +439,32 @@ export const CitizenReportWizardPage: React.FC = () => {
                   alt="Flood Preview"
                   className="max-h-64 mx-auto rounded-xl shadow-md object-cover border border-slate-200"
                 />
-                <div className="flex items-center justify-center gap-2">
+                <div className="flex flex-wrap items-center justify-center gap-2">
                   <span className="text-xs font-bold text-emerald-700 flex items-center gap-1">
-                    <CheckCircle2 className="w-4 h-4" /> Photo ready for AI analysis
+                    <CheckCircle2 className="w-4 h-4" />
+                    {isProcessingImage ? 'Sanitizing image...' : imageMetaInfo || 'Photo ready for AI analysis'}
                   </span>
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setImagePreview(null);
-                      setImageBase64(null);
-                      setSelectedFile(null);
+                      fileInputRef.current?.click();
                     }}
-                    className="p-1.5 rounded-lg text-red-500 hover:bg-red-50"
+                    className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Replace Photo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleClearImage();
+                    }}
+                    className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 flex items-center gap-1 text-[11px] font-semibold"
                     aria-label="Remove photo"
                   >
                     <Trash2 className="w-4 h-4" />
+                    <span>Remove</span>
                   </button>
                 </div>
               </div>
@@ -538,13 +583,14 @@ export const CitizenReportWizardPage: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Colombo Municipal Area / Ward
+                  Colombo Municipal Area / Ward <span className="text-red-500">*</span>
                 </label>
                 <select
                   value={area}
                   onChange={(e) => handleAreaChange(e.target.value)}
                   className="w-full py-2.5 px-3 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
                 >
+                  <option value="">Select municipal area...</option>
                   {Object.keys(areaCoordinates).map((a) => (
                     <option key={a} value={a}>
                       {a} Sector
@@ -572,12 +618,12 @@ export const CitizenReportWizardPage: React.FC = () => {
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                 <div>
                   <span className="text-xs font-bold text-slate-800 block">
-                    GPS Coordinates (Editable)
+                    GPS Coordinates (Required &amp; Editable)
                   </span>
                   <span className="text-[11px] text-slate-500">
                     {gpsSuccess
                       ? '✓ GPS position acquired via browser'
-                      : 'Select municipal area, auto-locate, or type coordinates'}
+                      : 'Select municipal area, use GPS, or type coordinates manually'}
                   </span>
                 </div>
 
@@ -600,8 +646,12 @@ export const CitizenReportWizardPage: React.FC = () => {
                   <input
                     type="number"
                     step="0.0001"
+                    placeholder="e.g. 6.92710"
                     value={latInput}
-                    onChange={(e) => setLatInput(e.target.value)}
+                    onChange={(e) => {
+                      setLatInput(e.target.value);
+                      setPinConfirmed(false);
+                    }}
                     className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/20"
                   />
                 </div>
@@ -612,8 +662,12 @@ export const CitizenReportWizardPage: React.FC = () => {
                   <input
                     type="number"
                     step="0.0001"
+                    placeholder="e.g. 79.86530"
                     value={lngInput}
-                    onChange={(e) => setLngInput(e.target.value)}
+                    onChange={(e) => {
+                      setLngInput(e.target.value);
+                      setPinConfirmed(false);
+                    }}
                     className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/20"
                   />
                 </div>
@@ -623,17 +677,33 @@ export const CitizenReportWizardPage: React.FC = () => {
             {/* Inline Map Pin Preview */}
             <div className="rounded-2xl overflow-hidden border border-slate-200">
               <div className="bg-slate-900 text-white px-4 py-2 text-[11px] font-mono flex items-center justify-between">
-                <span>Selected Pin Preview ({coordsAreValid ? `${parsedLat.toFixed(4)}, ${parsedLng.toFixed(4)}` : 'Invalid coordinates'})</span>
-                <span className="text-cyan-400">{area} Sector</span>
+                <span>
+                  Selected Pin Preview ({coordsAreValid ? `${parsedLat.toFixed(4)}, ${parsedLng.toFixed(4)}` : 'Awaiting coordinates'})
+                </span>
+                <span className="text-cyan-400">{area ? `${area} Sector` : 'Select sector'}</span>
               </div>
               <FloodMap
                 hotspots={hotspots}
                 reports={previewPinReport}
+                focusCoordinates={coordsAreValid ? [parsedLat, parsedLng] : undefined}
+                focusZoom={coordsAreValid ? 15 : undefined}
                 heightClass="h-[220px]"
                 showLegendOverlay={false}
                 showSectorControls={false}
               />
             </div>
+
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-cyan-50/60 border border-cyan-200 text-xs text-slate-800 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={pinConfirmed}
+                onChange={(e) => setPinConfirmed(e.target.checked)}
+                className="mt-0.5 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500"
+              />
+              <span>
+                <strong>Confirm Map Pin Location:</strong> I verify that the coordinates above match the flooded road section I am reporting.
+              </span>
+            </label>
           </div>
 
           <div className="flex items-center justify-between pt-2">
@@ -879,19 +949,6 @@ export const CitizenReportWizardPage: React.FC = () => {
             </div>
           )}
 
-          {/* Optional Evaluation Test Toggle for AI failure recovery */}
-          <label className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={simulateAiFailure}
-              onChange={(e) => setSimulateAiFailure(e.target.checked)}
-              className="rounded border-slate-300 text-cyan-600"
-            />
-            <span>
-              <strong>Academic Evaluation Option:</strong> Simulate AI failure to verify safe report saving & retry recovery
-            </span>
-          </label>
-
           <div className="flex items-center justify-between pt-2">
             <button
               type="button"
@@ -904,12 +961,12 @@ export const CitizenReportWizardPage: React.FC = () => {
 
             <button
               type="button"
-              onClick={handleFinalSubmit}
+              onClick={() => handleFinalSubmit(false)}
               disabled={isSubmitting}
               className="px-6 py-3.5 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-extrabold text-xs shadow-lg shadow-cyan-600/25 flex items-center gap-2 transition-all cursor-pointer"
             >
               <Sparkles className="w-4 h-4" />
-              <span>Submit & Run AI Verification</span>
+              <span>{imagePreview ? 'Submit & Run AI Verification' : 'Submit Report'}</span>
             </button>
           </div>
         </div>
@@ -924,7 +981,7 @@ export const CitizenReportWizardPage: React.FC = () => {
                 <Cpu className="w-8 h-8 animate-spin" />
               </div>
               <h3 className="text-lg font-bold text-slate-900">
-                Uploading Evidence & Running AI Assessment...
+                Uploading Evidence &amp; Running AI Assessment...
               </h3>
               <div className="max-w-sm mx-auto space-y-1.5">
                 <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
@@ -943,13 +1000,31 @@ export const CitizenReportWizardPage: React.FC = () => {
                 <span>Report Submission Error</span>
               </div>
               <p>{submitError}</p>
-              <button
-                type="button"
-                onClick={() => setCurrentStep(4)}
-                className="px-4 py-2 bg-red-600 text-white font-bold rounded-xl"
-              >
-                Return to Review
-              </button>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => handleFinalSubmit(false)}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl cursor-pointer"
+                >
+                  Retry Submission
+                </button>
+                {imagePreview && (
+                  <button
+                    type="button"
+                    onClick={() => handleFinalSubmit(true)}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl cursor-pointer"
+                  >
+                    Save Report Without Photo
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setCurrentStep(4)}
+                  className="px-4 py-2 bg-white border border-red-200 text-red-800 font-bold rounded-xl cursor-pointer"
+                >
+                  Return to Review
+                </button>
+              </div>
             </div>
           ) : submissionResult ? (
             <div className="space-y-6">
@@ -980,19 +1055,27 @@ export const CitizenReportWizardPage: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-cyan-400" />
                     <span className="text-xs font-bold text-white uppercase tracking-wider">
-                      Multimodal AI Assessment (Gemini 3.8 Flash)
+                      Multimodal AI Assessment (Gemini 4 Hydrogen)
                     </span>
                   </div>
                   <span
                     className={`font-mono text-xs font-bold px-2.5 py-1 rounded-lg border ${
                       submissionResult.aiStatus === 'FAILED'
                         ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                        : submissionResult.aiStatus === 'NOT_RUN'
+                        ? 'bg-slate-700 text-slate-200 border-slate-600'
+                        : submissionResult.aiStatus === 'SIMULATED'
+                        ? 'bg-amber-500/20 text-amber-200 border-amber-500/40'
                         : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
                     }`}
                   >
                     {submissionResult.aiStatus === 'FAILED'
                       ? 'AI Status: FAILED'
-                      : `${submissionResult.aiConfidence}% Confidence`}
+                      : submissionResult.aiStatus === 'NOT_RUN'
+                      ? 'AI Status: NOT RUN (No Photo)'
+                      : submissionResult.aiStatus === 'SIMULATED'
+                      ? `Simulated: ${submissionResult.aiConfidence ?? 'N/A'}%`
+                      : `${submissionResult.aiConfidence ?? 'N/A'}% Confidence`}
                   </span>
                 </div>
 

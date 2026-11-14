@@ -64,17 +64,24 @@ export const HotspotCard: React.FC<HotspotCardProps> = ({
         {/* Metrics Grid */}
         <div className="grid grid-cols-3 gap-2 my-3 p-3 bg-slate-50 rounded-lg text-xs font-mono">
           <div>
-            <span className="text-[10px] text-slate-400 uppercase block font-sans">Citizen Reports</span>
+            <span className="text-[10px] text-slate-400 uppercase block font-sans">Unique Reports</span>
             <span className="font-bold text-slate-800 flex items-center gap-1">
               <Users className="w-3 h-3 text-cyan-600" />
-              {hotspot.reportCount}
+              <span>{hotspot.reportCount}</span>
+              {hotspot.duplicateReportCount ? (
+                <span className="text-[10px] text-slate-500 font-normal">
+                  (+{hotspot.duplicateReportCount} dup)
+                </span>
+              ) : null}
             </span>
           </div>
           <div>
             <span className="text-[10px] text-slate-400 uppercase block font-sans">3h Rain Forecast</span>
             <span className="font-bold text-cyan-700 flex items-center gap-1">
               <CloudRain className="w-3 h-3 text-cyan-600" />
-              {hotspot.forecastRainfallMm} mm
+              {hotspot.rainfallSource === 'MISSING'
+                ? 'Unavailable'
+                : `${hotspot.forecastRainfallMm} mm`}
             </span>
           </div>
           <div>

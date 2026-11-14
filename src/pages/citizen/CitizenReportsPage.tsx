@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Ban,
   MessageSquare,
+  ImageOff,
 } from 'lucide-react';
 import { useFlood } from '../../context/FloodContext';
 import { RiskBadge } from '../../components/common/RiskBadge';
@@ -196,11 +197,18 @@ export const CitizenReportsPage: React.FC = () => {
                 {/* Header Row */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
-                    <img
-                      src={report.imageUrl || '/images/flood_street_water_1794422510568.jpg'}
-                      alt={report.location}
-                      className="w-14 h-14 rounded-2xl object-cover shrink-0 border border-slate-100 shadow-2xs"
-                    />
+                    {report.imageUrl ? (
+                      <img
+                        src={report.imageUrl}
+                        alt={report.location}
+                        className="w-14 h-14 rounded-2xl object-cover shrink-0 border border-slate-100 shadow-2xs"
+                      />
+                    ) : (
+                      <div className="w-14 h-14 rounded-2xl bg-slate-100 border border-slate-200 flex flex-col items-center justify-center text-slate-400 shrink-0">
+                        <ImageOff className="w-4 h-4" />
+                        <span className="text-[8px] font-bold uppercase mt-0.5">No Photo</span>
+                      </div>
+                    )}
                     <div>
                       <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                         <span className="font-mono text-xs font-black text-slate-800">
@@ -332,10 +340,22 @@ export const CitizenReportsPage: React.FC = () => {
                   >
                     <div>
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                        AI Vision Analysis ({report.aiConfidence ?? 0}% confidence)
+                        AI Vision Analysis (
+                        {aiFailed
+                          ? 'Failed'
+                          : report.aiStatus === 'NOT_RUN' ||
+                            (!report.imageUrl && report.aiConfidence == null)
+                          ? 'Not Run — No Photo'
+                          : report.aiStatus === 'SIMULATED'
+                          ? `${report.aiConfidence ?? 'N/A'}% Simulated`
+                          : report.aiConfidence != null
+                          ? `${report.aiConfidence}% confidence`
+                          : 'Confidence N/A'}
+                        )
                       </span>
                       <p className={`font-semibold text-xs mt-0.5 ${aiFailed ? 'text-red-800' : 'text-slate-800'}`}>
-                        {report.aiClassification}
+                        {report.aiClassification ||
+                          (report.aiStatus === 'NOT_RUN' ? 'AI Not Run (No Image)' : 'Under Review')}
                       </p>
                     </div>
                     {aiFailed && (
@@ -418,9 +438,23 @@ export const CitizenReportsPage: React.FC = () => {
             <div className="p-4 bg-slate-900 text-white rounded-2xl border border-slate-800 space-y-2 text-xs">
               <div className="flex items-center justify-between">
                 <span className="font-bold text-cyan-300">Multimodal AI Assessment</span>
-                <span className="font-mono text-cyan-400 font-bold">{selectedReport.aiConfidence ?? 0}%</span>
+                <span className="font-mono text-cyan-400 font-bold">
+                  {selectedReport.aiStatus === 'FAILED'
+                    ? 'AI FAILED'
+                    : selectedReport.aiStatus === 'NOT_RUN' ||
+                      (!selectedReport.imageUrl && selectedReport.aiConfidence == null)
+                    ? 'NOT RUN'
+                    : selectedReport.aiStatus === 'SIMULATED'
+                    ? `${selectedReport.aiConfidence ?? 'N/A'}% (Simulated)`
+                    : selectedReport.aiConfidence != null
+                    ? `${selectedReport.aiConfidence}%`
+                    : 'N/A'}
+                </span>
               </div>
-              <p className="text-slate-300 font-medium">{selectedReport.aiClassification}</p>
+              <p className="text-slate-300 font-medium">
+                {selectedReport.aiClassification ||
+                  (selectedReport.aiStatus === 'NOT_RUN' ? 'AI Not Run (No Image)' : 'Under Review')}
+              </p>
               {selectedReport.aiVerificationDetails?.explanation && (
                 <p className="text-[11px] text-slate-400 italic">
                   "{selectedReport.aiVerificationDetails.explanation}"

@@ -3,10 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { FloodReport, FloodHotspot, BlockchainRecord } from '../utils/floodLogic';
+import {
+  FloodReport,
+  FloodHotspot,
+  BlockchainRecord,
+  computeBlockchainHashChain,
+  GENESIS_PREV_HASH,
+} from '../utils/floodLogic';
 
 export const SIMULATION_NOTICE =
-  'DEMONSTRATION MODE ACTIVE: All flood events, sensor signals, AI confidence scores, and blockchain transactions are synthetic simulations for academic research and evaluation.';
+  'DEMONSTRATION MODE ACTIVE: All flood events, sensor signals, AI confidence scores, and hash-chain records are synthetic simulations for academic research and evaluation.';
 
 export const INITIAL_WEATHER_FORECAST = {
   currentTempC: 28,
@@ -16,10 +22,10 @@ export const INITIAL_WEATHER_FORECAST = {
   humidityPercent: 92,
   windSpeedKmh: 24,
   windDirection: 'SW',
-  updatedAt: 'Just now',
-  source: 'Open-Meteo & Department of Meteorology (Colombo Radar)',
+  updatedAt: 'Demonstration Snapshot',
+  source: 'Simulated Monsoon Scenario (Academic Prototype Dataset)',
   isSimulated: true,
-  status: 'Meteorological Department Advisory: High Runoff Alert',
+  status: 'Simulated High Runoff Advisory (Demonstration Scenario)',
 };
 
 export const INITIAL_HOTSPOTS: FloodHotspot[] = [
@@ -30,11 +36,15 @@ export const INITIAL_HOTSPOTS: FloodHotspot[] = [
     lat: 6.9271,
     lng: 79.8653,
     reportCount: 5,
+    totalRecordCount: 5,
+    duplicateReportCount: 0,
+    independentConfirmations: 5,
     firstReportedTime: '2026-11-11T07:15:00.000Z',
     latestReportedTime: '2026-11-11T09:40:00.000Z',
     riskLevel: 'HIGH',
     riskScore: 89,
     forecastRainfallMm: 38.5,
+    rainfallSource: 'FORECAST',
     verificationStatus: 'VERIFIED',
     precaution: 'Deploy emergency sucker trucks; re-route inbound transit around Maradana railway underpass.',
     associatedReportIds: ['REP-101', 'REP-102', 'REP-103', 'REP-104', 'REP-105'],
@@ -55,11 +65,15 @@ export const INITIAL_HOTSPOTS: FloodHotspot[] = [
     lat: 6.9360,
     lng: 79.8850,
     reportCount: 4,
+    totalRecordCount: 4,
+    duplicateReportCount: 0,
+    independentConfirmations: 4,
     firstReportedTime: '2026-11-11T06:30:00.000Z',
     latestReportedTime: '2026-11-11T09:25:00.000Z',
     riskLevel: 'HIGH',
     riskScore: 92,
     forecastRainfallMm: 42.0,
+    rainfallSource: 'FORECAST',
     verificationStatus: 'VERIFIED',
     precaution: 'Activate Kelani river bund sluice gates; position military inflatable response boats at Kolonnawa canal.',
     associatedReportIds: ['REP-106', 'REP-107', 'REP-108', 'REP-109'],
@@ -80,11 +94,15 @@ export const INITIAL_HOTSPOTS: FloodHotspot[] = [
     lat: 6.8745,
     lng: 79.8600,
     reportCount: 3,
+    totalRecordCount: 3,
+    duplicateReportCount: 0,
+    independentConfirmations: 3,
     firstReportedTime: '2026-11-11T08:10:00.000Z',
     latestReportedTime: '2026-11-11T09:50:00.000Z',
     riskLevel: 'MEDIUM',
     riskScore: 66,
     forecastRainfallMm: 16.5,
+    rainfallSource: 'FORECAST',
     verificationStatus: 'VERIFIED',
     precaution: 'Inspect sea-outfall flap gates; yellow alert for Marine Drive coastal drainage backup.',
     associatedReportIds: ['REP-110', 'REP-111', 'REP-112'],
@@ -105,11 +123,15 @@ export const INITIAL_HOTSPOTS: FloodHotspot[] = [
     lat: 6.9380,
     lng: 79.8780,
     reportCount: 2,
+    totalRecordCount: 2,
+    duplicateReportCount: 0,
+    independentConfirmations: 2,
     firstReportedTime: '2026-11-11T08:45:00.000Z',
     latestReportedTime: '2026-11-11T09:35:00.000Z',
     riskLevel: 'MEDIUM',
     riskScore: 58,
     forecastRainfallMm: 18.0,
+    rainfallSource: 'FORECAST',
     verificationStatus: 'UNDER REVIEW',
     precaution: 'Cautionary traffic advisory on Baseline flyover underpass; clear debris grates.',
     associatedReportIds: ['REP-113', 'REP-114'],
@@ -130,11 +152,15 @@ export const INITIAL_HOTSPOTS: FloodHotspot[] = [
     lat: 6.9110,
     lng: 79.8770,
     reportCount: 1,
+    totalRecordCount: 1,
+    duplicateReportCount: 0,
+    independentConfirmations: 1,
     firstReportedTime: '2026-11-11T09:12:00.000Z',
     latestReportedTime: '2026-11-11T09:12:00.000Z',
     riskLevel: 'LOW',
     riskScore: 32,
     forecastRainfallMm: 8.5,
+    rainfallSource: 'FORECAST',
     verificationStatus: 'VERIFIED',
     precaution: 'Standard stormwater runoff. Municipal culverts clear and flowing steadily.',
     associatedReportIds: ['REP-115'],
@@ -155,11 +181,15 @@ export const INITIAL_HOTSPOTS: FloodHotspot[] = [
     lat: 6.8710,
     lng: 79.8980,
     reportCount: 1,
+    totalRecordCount: 1,
+    duplicateReportCount: 0,
+    independentConfirmations: 1,
     firstReportedTime: '2026-11-11T09:30:00.000Z',
     latestReportedTime: '2026-11-11T09:30:00.000Z',
     riskLevel: 'LOW',
     riskScore: 28,
     forecastRainfallMm: 6.0,
+    rainfallSource: 'FORECAST',
     verificationStatus: 'VERIFIED',
     precaution: 'Minor curb gutter pooling. Traffic operating without delays.',
     associatedReportIds: ['REP-116'],
@@ -584,98 +614,108 @@ export const INITIAL_REPORTS: FloodReport[] = [
   },
 ];
 
-export const INITIAL_BLOCKCHAIN_RECORDS: BlockchainRecord[] = [
-  {
-    eventId: 'EVT-892011',
-    hotspotId: 'HS-042',
-    location: 'Maradana Junction & Station Approach',
-    severity: 'HIGH',
-    timestamp: '2026-11-11T08:00:22.000Z',
-    txHash: '0x8f7a912e4b3c0d5e6f1a8b9c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e',
-    blockNumber: 19482104,
-    network: 'Ethereum Sepolia Testnet (Simulated)',
-    status: 'CONFIRMED (SIMULATED)',
-    merkleRoot: '0x3c9d7e1f4a5b6c8d2e0f1a3b5c7d9e1f3a5b7c9d1e3f5a7b9c1d3e5f7a9b1c3d',
-    payloadHash: '0x7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f',
-    validatorCount: 18,
-    isSimulated: true,
-    contractAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e (Simulated)',
-    chainId: 11155111,
-    auditExplanation: 'Simulated Sepolia Testnet Record: Anchored Maradana High-Risk Declaration at block 19482104. Verified by 18 simulated validator nodes.',
-  },
-  {
-    eventId: 'EVT-892012',
-    hotspotId: 'HS-045',
-    location: 'Kolonnawa Low-Lying Canal Basin',
-    severity: 'HIGH',
-    timestamp: '2026-11-11T07:15:40.000Z',
-    txHash: '0x4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e',
-    blockNumber: 19482088,
-    network: 'Ethereum Sepolia Testnet (Simulated)',
-    status: 'CONFIRMED (SIMULATED)',
-    merkleRoot: '0x7b9c1d3e5f7a9b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e3f5a7b9c',
-    payloadHash: '0x1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c',
-    validatorCount: 21,
-    isSimulated: true,
-    contractAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e (Simulated)',
-    chainId: 11155111,
-    auditExplanation: 'Simulated Sepolia Testnet Record: Kolonnawa canal breach state proof anchored. Immutable record for municipal disaster compensation auditing.',
-  },
-  {
-    eventId: 'EVT-892013',
-    hotspotId: 'HS-043',
-    location: 'Wellawatte Canal Crossing & Galle Road',
-    severity: 'MEDIUM',
-    timestamp: '2026-11-11T08:35:15.000Z',
-    txHash: '0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
-    blockNumber: 19482126,
-    network: 'Ethereum Sepolia Testnet (Simulated)',
-    status: 'CONFIRMED (SIMULATED)',
-    merkleRoot: '0x5a7b9c1d3e5f7a9b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e3f5a7b',
-    payloadHash: '0x9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b',
-    validatorCount: 16,
-    isSimulated: true,
-    contractAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e (Simulated)',
-    chainId: 11155111,
-    auditExplanation: 'Simulated Sepolia Testnet Record: Wellawatte coastal ponding state proof anchored at block 19482126.',
-  },
-  {
-    eventId: 'EVT-892014',
-    hotspotId: 'HS-046',
-    location: 'Dematagoda Baseline Road Interchange',
-    severity: 'MEDIUM',
-    timestamp: '2026-11-11T09:05:08.000Z',
-    txHash: '0x9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d',
-    blockNumber: 19482145,
-    network: 'Ethereum Sepolia Testnet (Simulated)',
-    status: 'CONFIRMED (SIMULATED)',
-    merkleRoot: '0x2e0f1a3b5c7d9e1f3a5b7c9d1e3f5a7b9c1d3e5f7a9b1c3d5e7f9a1b3c5d7e9f',
-    payloadHash: '0x3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d',
-    validatorCount: 15,
-    isSimulated: true,
-    contractAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e (Simulated)',
-    chainId: 11155111,
-    auditExplanation: 'Simulated Sepolia Testnet Record: Dematagoda baseline underpass incident recorded on simulated ledger.',
-  },
-  {
-    eventId: 'EVT-892015',
-    hotspotId: 'HS-044',
-    location: 'Borella Kanatte Roundabout Suburbs',
-    severity: 'LOW',
-    timestamp: '2026-11-11T09:20:50.000Z',
-    txHash: '0x6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e',
-    blockNumber: 19482158,
-    network: 'Ethereum Sepolia Testnet (Simulated)',
-    status: 'PENDING (SIMULATED)',
-    merkleRoot: '0x1f3a5b7c9d1e3f5a7b9c1d3e5f7a9b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f3a',
-    payloadHash: '0x4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e',
-    validatorCount: 9,
-    isSimulated: true,
-    contractAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e (Simulated)',
-    chainId: 11155111,
-    auditExplanation: 'Simulated Sepolia Testnet Record: Transaction submitted to simulated mempool, awaiting validator seal.',
-  },
-];
+function buildDemoHashChain(): BlockchainRecord[] {
+  const seeds: Array<{
+    eventId: string;
+    hotspotId: string;
+    location: string;
+    severity: 'HIGH' | 'MEDIUM' | 'LOW';
+    timestamp: string;
+    blockNumber: number;
+    status: BlockchainRecord['status'];
+    auditExplanation: string;
+  }> = [
+    {
+      eventId: 'EVT-892012',
+      hotspotId: 'HS-045',
+      location: 'Kolonnawa Low-Lying Canal Basin',
+      severity: 'HIGH',
+      timestamp: '2026-11-11T07:15:40.000Z',
+      blockNumber: 1,
+      status: 'CONFIRMED (SIMULATED)',
+      auditExplanation: 'Prototype SHA-256 Hash-Chain Record: Kolonnawa canal breach audit payload hashed and anchored at genesis link.',
+    },
+    {
+      eventId: 'EVT-892011',
+      hotspotId: 'HS-042',
+      location: 'Maradana Junction & Station Approach',
+      severity: 'HIGH',
+      timestamp: '2026-11-11T08:00:22.000Z',
+      blockNumber: 2,
+      status: 'CONFIRMED (SIMULATED)',
+      auditExplanation: 'Prototype SHA-256 Hash-Chain Record: Anchored Maradana High-Risk Declaration linked to Kolonnawa genesis block.',
+    },
+    {
+      eventId: 'EVT-892013',
+      hotspotId: 'HS-043',
+      location: 'Wellawatte Canal Crossing & Galle Road',
+      severity: 'MEDIUM',
+      timestamp: '2026-11-11T08:35:15.000Z',
+      blockNumber: 3,
+      status: 'CONFIRMED (SIMULATED)',
+      auditExplanation: 'Prototype SHA-256 Hash-Chain Record: Wellawatte coastal ponding audit record chained to block #2.',
+    },
+    {
+      eventId: 'EVT-892014',
+      hotspotId: 'HS-046',
+      location: 'Dematagoda Baseline Road Interchange',
+      severity: 'MEDIUM',
+      timestamp: '2026-11-11T09:05:08.000Z',
+      blockNumber: 4,
+      status: 'CONFIRMED (SIMULATED)',
+      auditExplanation: 'Prototype SHA-256 Hash-Chain Record: Dematagoda baseline underpass incident chained to block #3.',
+    },
+    {
+      eventId: 'EVT-892015',
+      hotspotId: 'HS-044',
+      location: 'Borella Kanatte Roundabout Suburbs',
+      severity: 'LOW',
+      timestamp: '2026-11-11T09:20:50.000Z',
+      blockNumber: 5,
+      status: 'PENDING (SIMULATED)',
+      auditExplanation: 'Prototype SHA-256 Hash-Chain Record: Pending audit seal chained to block #4.',
+    },
+  ];
+
+  let prevHash = GENESIS_PREV_HASH;
+  const built: BlockchainRecord[] = [];
+  for (const s of seeds) {
+    const hashes = computeBlockchainHashChain({
+      eventId: s.eventId,
+      hotspotId: s.hotspotId,
+      location: s.location,
+      severity: s.severity,
+      timestamp: s.timestamp,
+      blockNumber: s.blockNumber,
+      prevHash,
+    });
+    built.push({
+      eventId: s.eventId,
+      hotspotId: s.hotspotId,
+      location: s.location,
+      severity: s.severity,
+      timestamp: s.timestamp,
+      txHash: hashes.txHash,
+      blockNumber: s.blockNumber,
+      network: 'Prototype SHA-256 Hash-Chain (Simulated Ledger)',
+      status: s.status,
+      merkleRoot: hashes.merkleRoot,
+      prevHash: hashes.prevHash,
+      recordHash: hashes.recordHash,
+      canonicalPayload: hashes.canonicalPayload,
+      payloadHash: hashes.payloadHash,
+      validatorCount: 1,
+      isSimulated: true,
+      contractAddress: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e (Prototype Audit Spec)',
+      chainId: 11155111,
+      auditExplanation: s.auditExplanation,
+    });
+    prevHash = hashes.recordHash;
+  }
+  return built.reverse();
+}
+
+export const INITIAL_BLOCKCHAIN_RECORDS: BlockchainRecord[] = buildDemoHashChain();
 
 export const SYSTEM_ACTIVITY_EVENTS = [
   {
